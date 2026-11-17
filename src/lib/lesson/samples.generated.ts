@@ -7,8 +7,8 @@ export const SAMPLES: SampleInfo[] = [
     "title": "How Photosynthesis Works",
     "topic": "How does photosynthesis work?",
     "level": "beginner",
-    "summary": "You will understand how plants use sunlight, water, and carbon dioxide to make their own food and release oxygen.",
-    "duration": 112,
+    "summary": "By the end, you will understand how plants turn sunlight, water, and air into their own food and the oxygen we breathe.",
+    "duration": 132,
     "emoji": "🌿"
   },
   {
@@ -16,17 +16,26 @@ export const SAMPLES: SampleInfo[] = [
     "title": "Why Do We Have Seasons?",
     "topic": "Why do we have seasons?",
     "level": "beginner",
-    "summary": "You will understand how Earth's tilt changes the angle of sunlight, creating summer and winter.",
-    "duration": 118,
+    "summary": "You will understand how Earth's tilt, not its distance from the sun, creates summer and winter.",
+    "duration": 124,
     "emoji": "🌍"
   },
   {
     "slug": "compound-interest",
-    "title": "What Is Compound Interest?",
+    "title": "How Compound Interest Works",
     "topic": "What is compound interest?",
     "level": "beginner",
-    "summary": "You will understand how earning interest on your interest makes money grow faster and faster over time.",
-    "duration": 104,
+    "summary": "You will understand how earning interest on your interest makes money grow faster over time.",
+    "duration": 128,
     "emoji": "💰"
+  },
+  {
+    "slug": "neural-networks",
+    "title": "How a Neural Network Learns",
+    "topic": "How does a neural network learn?",
+    "level": "intermediate",
+    "summary": "By the end of this lesson, you will understand how a neural network makes predictions, measures its mistakes, and adjusts its weights step by step to improve.",
+    "duration": 132,
+    "emoji": "🧠"
   }
 ];
