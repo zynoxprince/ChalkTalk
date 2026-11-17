@@ -104,7 +104,8 @@ export function agendaSegment(outline: Outline, index = 1): Segment {
       {
         narration: spoken,
         actions: [
-          { id: "agenda", kind: "list", cue: "Here's our plan", text: null, items: titles, icon: null, at: { col: 5, row: 1, w: 7, h: 4 }, from: null, to: null, target: null, color: "blue", expr: null },
+          // A roadmap: three numbered stops along a line.
+          { id: "agenda", kind: "timeline", cue: "Here's our plan", text: null, items: titles.map((t, i) => `${i + 1}: ${t}`), icon: null, at: { col: 5, row: 1, w: 7, h: 4 }, from: null, to: null, target: null, color: "blue", expr: null },
         ],
       },
     ],

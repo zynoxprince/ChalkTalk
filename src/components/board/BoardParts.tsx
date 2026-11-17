@@ -4,6 +4,7 @@ import { createElement, memo } from "react";
 import { bumpScale, clamp01, easeInOutCubic, easeOutBack, easeOutCubic, formatNumber, popScale } from "@/lib/board/anim";
 import type { IconNode } from "@/lib/board/icons";
 import type { Part } from "@/lib/board/layout";
+import type { MotionFrame } from "@/lib/board/motion";
 import type { TimedElement } from "@/lib/board/timeline";
 import { pointAlong } from "@/lib/board/state";
 import { textWidth } from "@/lib/board/text";
@@ -19,7 +20,40 @@ const PACKET_TRAVEL = 1.1;
 /** Packet length as a fraction of the arrow. */
 const PACKET = 0.05;
 
-function PartView({ part, lp, clipId, age }: { part: Part; lp: number; clipId: string; age: number }) {
+/** Deterministic pseudo-random numbers (particles start in the same places every time). */
+function mulberry32(seed: number) {
+  let a = seed | 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Bounces a coordinate back and forth inside [0, length]. */
+const reflect = (v: number, length: number) => {
+  const m = ((v % (2 * length)) + 2 * length) % (2 * length);
+  return m <= length ? m : 2 * length - m;
+};
+
+type ParticlesPart = Extract<Part, { type: "particles" }>;
+const particleCache = new WeakMap<ParticlesPart, { x0: number; y0: number; vx: number; vy: number }[]>();
+function particlesOf(part: ParticlesPart) {
+  let ps = particleCache.get(part);
+  if (!ps) {
+    ps = Array.from({ length: part.n }, (_, i) => {
+      const rnd = mulberry32(part.seed + i * 7919);
+      const angle = rnd() * Math.PI * 2;
+      const speed = part.speed * (0.6 + rnd() * 0.8);
+      return { x0: rnd() * part.w, y0: rnd() * part.h, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed };
+    });
+    particleCache.set(part, ps);
+  }
+  return ps;
+}
+
+function PartView({ part, lp, clipId, age, since }: { part: Part; lp: number; clipId: string; age: number; since: number }) {
   if (lp <= 0) return null;
   const done = lp >= 1;
   switch (part.type) {
@@ -177,6 +211,29 @@ function PartView({ part, lp, clipId, age }: { part: Part; lp: number; clipId: s
         </g>
       );
     }
+    case "wedge": {
+      // Sweeps open clockwise from 12 o'clock.
+      const sweep = (part.a1 - part.a0) * (done ? 1 : easeOutCubic(lp));
+      if (sweep < 0.002) return null;
+      const at = (ang: number) => `${(part.cx + part.r * Math.sin(ang)).toFixed(1)} ${(part.cy - part.r * Math.cos(ang)).toFixed(1)}`;
+      const d =
+        sweep >= Math.PI * 2 - 1e-3
+          ? `M${part.cx} ${part.cy - part.r} A${part.r} ${part.r} 0 1 1 ${part.cx} ${part.cy + part.r} A${part.r} ${part.r} 0 1 1 ${part.cx} ${part.cy - part.r} Z`
+          : `M${part.cx} ${part.cy} L${at(part.a0)} A${part.r} ${part.r} 0 ${sweep > Math.PI ? 1 : 0} 1 ${at(part.a0 + sweep)} Z`;
+      return <path d={d} fill={part.tint} fillOpacity={0.9} stroke={part.color} strokeWidth={2.5} strokeLinejoin="round" />;
+    }
+    case "particles": {
+      // Each particle bounces around the box at its own speed; they appear one by one.
+      const ps = particlesOf(part);
+      const shown = done ? ps.length : Math.ceil(lp * ps.length);
+      return (
+        <g>
+          {ps.slice(0, shown).map((q, i) => (
+            <circle key={i} cx={(part.x + reflect(q.x0 + q.vx * since, part.w)).toFixed(1)} cy={(part.y + reflect(q.y0 + q.vy * since, part.h)).toFixed(1)} r={part.r} fill={part.color} opacity={0.82} />
+          ))}
+        </g>
+      );
+    }
     case "count": {
       const shown = done || !part.num ? part.text : formatNumber(part.num, part.num.value * easeOutCubic(lp));
       return (
@@ -220,21 +277,34 @@ interface ElementViewProps {
   bump: number;
   /** Seconds since it finished drawing (drives flowing arrows). */
   age: number;
+  /** Seconds since it started (drives particles). */
+  since: number;
+  /** Transforms while a demonstration moves it. */
+  motion?: MotionFrame;
   uid: string;
   interactive: boolean;
   focused: boolean;
   onAsk?: (el: TimedElement) => void;
 }
 
-function ElementViewImpl({ el, p, bump, age, uid, interactive, focused, onAsk }: ElementViewProps) {
+function ElementViewImpl({ el, p, bump, age, since, motion, uid, interactive, focused, onAsk }: ElementViewProps) {
   const clickable = interactive && el.clickable && !!el.label && p >= 1 && !!onAsk;
-  const body = el.parts.map((part, i) => <PartView key={i} part={part} lp={local(part, p)} age={age} clipId={`${uid}-${el.id}-${i}`.replace(/[^a-zA-Z0-9_-]/g, "_")} />);
+  const view = (part: Part, i: number) => <PartView key={i} part={part} lp={local(part, p)} age={age} since={since} clipId={`${uid}-${el.id}-${i}`.replace(/[^a-zA-Z0-9_-]/g, "_")} />;
+  // A spinning or swinging element turns its drawing, while its caption stays upright.
+  const body = motion?.turn ? (
+    <>
+      <g transform={motion.turn}>{el.parts.map((part, i) => (part.type === "text" ? null : view(part, i)))}</g>
+      {el.parts.map((part, i) => (part.type === "text" ? view(part, i) : null))}
+    </>
+  ) : (
+    el.parts.map(view)
+  );
   // Pop in as it appears; bump when something points at it.
   const s = (el.pop ? popScale(p) : 1) * bumpScale(bump);
   const cx = el.bbox.x + el.bbox.w / 2;
   const cy = el.bbox.y + el.bbox.h / 2;
   const transform = s === 1 ? undefined : `translate(${cx} ${cy}) scale(${s}) translate(${-cx} ${-cy})`;
-  if (!clickable) return <g transform={transform}>{body}</g>;
+  if (!clickable) return <g transform={motion?.move}>{transform ? <g transform={transform}>{body}</g> : body}</g>;
   const pad = 10;
   return (
     <g
@@ -250,8 +320,11 @@ function ElementViewImpl({ el, p, bump, age, uid, interactive, focused, onAsk }:
         }
       }}
     >
-      <rect className="board-el-hit" x={el.bbox.x - pad} y={el.bbox.y - pad} width={el.bbox.w + pad * 2} height={el.bbox.h + pad * 2} rx={14} />
-      <g transform={transform}>{body}</g>
+      {/* The hit area moves with the element. */}
+      <g transform={motion?.move}>
+        <rect className="board-el-hit" x={el.bbox.x - pad} y={el.bbox.y - pad} width={el.bbox.w + pad * 2} height={el.bbox.h + pad * 2} rx={14} />
+        <g transform={transform}>{body}</g>
+      </g>
     </g>
   );
 }
@@ -262,8 +335,10 @@ export const ElementView = memo(
     a.el === b.el &&
     a.p === b.p &&
     a.bump === b.bump &&
+    a.motion?.move === b.motion?.move &&
+    a.motion?.turn === b.motion?.turn &&
     // Only elements that keep moving after they're drawn need every tick of the clock.
-    (!a.el.ambient || a.age === b.age) &&
+    (!a.el.ambient || a.since === b.since) &&
     a.interactive === b.interactive &&
     a.focused === b.focused &&
     a.onAsk === b.onAsk,

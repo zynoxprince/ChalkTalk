@@ -134,6 +134,71 @@ export const FIXTURE_SCENES: Scene[] = [
     ],
   },
   {
+    id: "c4",
+    kind: "chapter",
+    title: "Things in motion",
+    segments: [
+      {
+        id: "c4-0",
+        sig: "",
+        narration: "Watch the Earth travel around the sun, while a pendulum swings back and forth.",
+        actions: [
+          A({ id: "earth2", kind: "icon", icon: "earth", text: "Earth", color: "blue", at: { col: 7, row: 2, w: 2, h: 2 }, cue: "Watch the Earth" }),
+          A({ id: "sun2", kind: "icon", icon: "sun", text: "Sun", color: "orange", at: { col: 3, row: 1, w: 3, h: 3 }, cue: "around the sun" }),
+          A({ id: "year", kind: "orbit", target: "earth2", to: "sun2", cue: "travel around" }),
+          A({
+            id: "pendulum",
+            kind: "sketch",
+            items: ["line 25 6 75 6", "line 50 6 50 68", "fill orange circle 50 78 11"],
+            text: "Pendulum",
+            at: { col: 9, row: 0, w: 3, h: 3 },
+            cue: "a pendulum",
+          }),
+          A({ id: "tick", kind: "swing", target: "pendulum", cue: "swings back and forth" }),
+        ],
+      },
+      {
+        id: "c4-1",
+        sig: "",
+        narration: "Heat makes molecules jiggle faster, and gears keep on turning.",
+        actions: [
+          A({ id: "gas", kind: "particles", text: "Warm gas", expr: "16 fast", color: "red", at: { col: 9, row: 3, w: 3, h: 3 }, cue: "Heat makes molecules" }),
+          A({ id: "gear", kind: "icon", icon: "cog", text: "Gear", color: "purple", at: { col: 0, row: 4, w: 2, h: 2 }, cue: "gears keep" }),
+          A({ id: "turn", kind: "spin", target: "gear", cue: "keep on turning" }),
+        ],
+      },
+    ],
+  },
+  {
+    id: "c5",
+    kind: "chapter",
+    title: "Charts at a glance",
+    segments: [
+      {
+        id: "c5-0",
+        sig: "",
+        narration: "A fresh leaf is mostly water, with some sugars and a little of everything else.",
+        actions: [A({ id: "leafpie", kind: "pie", text: "A fresh leaf", items: ["Water: 80", "Sugars: 15", "Other: 5"], color: "green", at: { col: 0, row: 0, w: 5, h: 3 }, cue: "mostly water" })],
+      },
+      {
+        id: "c5-1",
+        sig: "",
+        narration: "Plants make their own food, while animals have to eat theirs.",
+        actions: [
+          A({ id: "vs", kind: "compare", items: ["Plants | Animals", "Make food | Eat food", "Give oxygen | Use oxygen"], color: "blue", at: { col: 6, row: 0, w: 6, h: 3 }, cue: "Plants make their own" }),
+        ],
+      },
+      {
+        id: "c5-2",
+        sig: "",
+        narration: "And through the year, a plant sprouts, grows, drops its leaves and rests.",
+        actions: [
+          A({ id: "year2", kind: "timeline", items: ["Spring: Sprouts", "Summer: Grows fast", "Autumn: Drops leaves", "Winter: Rests"], color: "green", at: { col: 0, row: 4, w: 12, h: 2 }, cue: "through the year" }),
+        ],
+      },
+    ],
+  },
+  {
     id: "recap",
     kind: "recap",
     title: "Recap",

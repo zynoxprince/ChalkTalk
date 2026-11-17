@@ -4,11 +4,11 @@ import type { SampleInfo } from "./saved";
 export const SAMPLES: SampleInfo[] = [
   {
     "slug": "photosynthesis",
-    "title": "How Photosynthesis Works",
+    "title": "How Plants Make Their Own Food",
     "topic": "How does photosynthesis work?",
     "level": "beginner",
-    "summary": "By the end, you will understand how plants turn sunlight, water, and air into their own food and the oxygen we breathe.",
-    "duration": 132,
+    "summary": "You will understand how plants use sunlight, water, and carbon dioxide to build sugar and release oxygen.",
+    "duration": 141,
     "emoji": "🌿"
   },
   {
@@ -16,26 +16,26 @@ export const SAMPLES: SampleInfo[] = [
     "title": "Why Do We Have Seasons?",
     "topic": "Why do we have seasons?",
     "level": "beginner",
-    "summary": "You will understand how Earth's tilt, not its distance from the sun, creates summer and winter.",
-    "duration": 124,
+    "summary": "You will understand how Earth's tilt—not its distance from the sun—creates the seasons and why they are opposite in each hemisphere.",
+    "duration": 134,
     "emoji": "🌍"
   },
   {
     "slug": "compound-interest",
-    "title": "How Compound Interest Works",
+    "title": "How Compound Interest Grows",
     "topic": "What is compound interest?",
     "level": "beginner",
-    "summary": "You will understand how earning interest on your interest makes money grow faster over time.",
-    "duration": 128,
+    "summary": "You will understand how earning interest on your interest makes money grow faster and faster over time.",
+    "duration": 125,
     "emoji": "💰"
   },
   {
     "slug": "neural-networks",
-    "title": "How a Neural Network Learns",
+    "title": "How Neural Networks Learn",
     "topic": "How does a neural network learn?",
     "level": "intermediate",
-    "summary": "By the end of this lesson, you will understand how a neural network makes predictions, measures its mistakes, and adjusts its weights step by step to improve.",
-    "duration": 132,
+    "summary": "You will understand how a neural network makes a prediction, measures its error, and adjusts its weights to improve.",
+    "duration": 125,
     "emoji": "🧠"
   }
 ];

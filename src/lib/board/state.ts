@@ -1,5 +1,6 @@
 import { drawEase } from "./anim";
 import { cameraAt, FULL_VIEW } from "./camera";
+import { motionTransform, type MotionFrame } from "./motion";
 import { ERASE_TIME, SCENE_GAP } from "./constants";
 import type { Pt, Rect } from "./layout";
 import type { TimedElement, TimedScene, TimedSegment, Timeline } from "./timeline";
@@ -20,6 +21,10 @@ export interface FrameItem {
   bump: number;
   /** Seconds since the element finished drawing (negative while drawing). */
   age: number;
+  /** Seconds since the element started (drives particles). */
+  since: number;
+  /** Transforms while a demonstration moves this element. */
+  motion?: MotionFrame;
 }
 
 export interface Frame {
@@ -52,7 +57,8 @@ export function segmentAt(tl: Timeline, t: number): TimedSegment | null {
   return found;
 }
 
-export function frameAt(tl: Timeline, t: number): Frame {
+/** `still`: for reduced motion, continuous motions are left out and one-off ones shown finished. */
+export function frameAt(tl: Timeline, t: number, opts: { still?: boolean } = {}): Frame {
   const empty: Frame = { t, scene: null, items: [], erase: 0, segment: null, wordIndex: -1, active: null, view: FULL_VIEW };
   if (!tl.scenes.length) return empty;
   const si = sceneIndexAt(tl, t);
@@ -67,7 +73,14 @@ export function frameAt(tl: Timeline, t: number): Frame {
     if (el.emphasis) {
       for (const at of el.emphasis) if (t > at && t < at + BUMP_TIME) bump = (t - at) / BUMP_TIME;
     }
-    const item: FrameItem = { el, p: raw >= 1 ? 1 : drawEase(raw), bump, age: t - el.start - el.dur };
+    const item: FrameItem = {
+      el,
+      p: raw >= 1 ? 1 : drawEase(raw),
+      bump,
+      age: t - el.start - el.dur,
+      since: t - el.start,
+      motion: el.motions ? motionTransform(el.motions, el.bbox, t, opts.still, el.art) : undefined,
+    };
     items.push(item);
     if (raw < 1 && (!active || el.start >= active.el.start)) active = item;
   }

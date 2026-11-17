@@ -134,8 +134,8 @@ Each lesson also tackles the topic's most common **misconception** explicitly: t
 Requirements: Node.js 20+, pnpm, and an [OpenRouter API key](https://openrouter.ai/keys).
 
 ```bash
-git clone https://github.com/zynoxprince/AI-Whiteboard-Tutor.git
-cd AI-Whiteboard-Tutor
+git clone https://github.com/zynoxprince/ChalkTalk.git
+cd ChalkTalk
 pnpm install
 cp .env.example .env.local      # then put your OpenRouter key in OPENROUTER_API_KEY
 openssl rand -hex 32            # paste the output into SIGNING_SECRET

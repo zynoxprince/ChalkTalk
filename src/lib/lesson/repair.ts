@@ -40,7 +40,13 @@ function repairAction(a: Action, narration: string, index: number): Action | nul
     ...a,
     id: safeId(a.id, `${kind}${index}`),
     text: cap(a.text, LIMITS[kind] ?? 60),
-    items: a.items ? a.items.map((i) => cap(i, 48)).filter((i): i is string => !!i).slice(0, 6) : null,
+    // Sketch shapes and table rows are longer than list items.
+    items: a.items
+      ? a.items
+          .map((i) => cap(i, kind === "sketch" ? 200 : kind === "compare" ? 90 : 60))
+          .filter((i): i is string => !!i)
+          .slice(0, kind === "sketch" ? 12 : kind === "timeline" ? 7 : 6)
+      : null,
     icon: a.icon ? (resolveIcon(a.icon) ?? a.icon) : null,
     from: safeRef(a.from),
     to: safeRef(a.to),
@@ -75,6 +81,39 @@ function repairAction(a: Action, narration: string, index: number): Action | nul
     case "number":
       if (!out.text) return null;
       if (!/\d/.test(out.text)) out.kind = "text";
+      break;
+    case "sketch":
+      if (!out.items?.length) {
+        if (!out.text) return null;
+        out.kind = "box";
+      }
+      break;
+    case "particles":
+      break;
+    case "timeline":
+    case "pie":
+      if (!out.items?.length) return null;
+      if (out.items.length < 2) out.kind = "list";
+      break;
+    case "compare":
+      if (!out.items?.length) return null;
+      if (out.items.filter((i) => i.includes("|")).length < 2) {
+        out.kind = "list";
+        out.items = out.items.map((i) => i.replace(/\s*\|\s*/g, " — "));
+      }
+      break;
+    case "orbit":
+    case "move":
+      // Something moves around or over to another element: both are needed.
+      if (!out.target) out.target = out.from;
+      if (!out.target || !out.to) return null;
+      break;
+    case "spin":
+    case "swing":
+    case "vibrate":
+    case "grow":
+      if (!out.target) out.target = out.from ?? out.to;
+      if (!out.target) return null;
       break;
     case "plot":
       if (!out.expr) return null;

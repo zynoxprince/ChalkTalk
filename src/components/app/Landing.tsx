@@ -15,7 +15,7 @@ const LEVEL_LABEL: Record<Level, { label: string; hint: string }> = {
   advanced: { label: "Advanced", hint: "Precise, with the underlying mechanism" },
 };
 
-export const REPO_URL = "https://github.com/zynoxprince/AI-Whiteboard-Tutor";
+export const REPO_URL = "https://github.com/zynoxprince/ChalkTalk";
 
 interface LandingProps {
   initialTopic?: string;

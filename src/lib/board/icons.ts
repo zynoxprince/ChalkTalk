@@ -4,6 +4,9 @@ export type { IconNode };
 
 export const ICON_NAMES = Object.keys(ICONS);
 
+/** A few more names the model likes to use. */
+const EXTRA_ALIASES: Record<string, string> = { check: "circle-check", tick: "circle-check", done: "circle-check", cross: "circle-x", planet: "earth", gear: "cog", pendulum: "clock" };
+
 /** Maps whatever the model wrote ("Water", "flask_icon", "trees") to a known icon. */
 export function resolveIcon(name: string | null | undefined): string | null {
   if (!name) return null;
@@ -18,6 +21,7 @@ export function resolveIcon(name: string | null | undefined): string | null {
   for (const c of candidates) {
     if (ICONS[c]) return c;
     if (ICON_ALIASES[c]) return ICON_ALIASES[c];
+    if (EXTRA_ALIASES[c]) return EXTRA_ALIASES[c];
   }
   // Last resort: an icon whose name contains the word.
   const partial = ICON_NAMES.find((k) => candidates.some((c) => c.length >= 3 && k.split("-").includes(c)));

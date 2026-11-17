@@ -38,14 +38,15 @@ const subscribeReducedMotion = (cb: () => void) => {
 /** With reduced motion, elements appear fully drawn at their cue, nothing moves and the camera stays put. */
 function settle(frame: Frame | null, reduced: boolean): Frame | null {
   if (!frame || !reduced) return frame;
-  return { ...frame, items: frame.items.filter((i) => !i.el.transient).map((i) => ({ ...i, p: 1, bump: 0, age: 0 })), active: null, erase: 0, view: FULL_VIEW };
+  // Particles stand still too (their clock stays at the start).
+  return { ...frame, items: frame.items.filter((i) => !i.el.transient).map((i) => ({ ...i, p: 1, bump: 0, age: 0, since: 0 })), active: null, erase: 0, view: FULL_VIEW };
 }
 
 export function Board({ timeline, time, overlay, interactive = false, focusedId = null, onAsk, showPen = true, camera = true, className, children }: BoardProps) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const reduced = useSyncExternalStore(subscribeReducedMotion, () => window.matchMedia(reducedMotionQuery).matches, () => false);
-  const frame: Frame | null = useMemo(() => settle(timeline ? frameAt(timeline, time) : null, reduced), [timeline, time, reduced]);
-  const over: Frame | null = useMemo(() => settle(overlay ? frameAt(overlay.timeline, overlay.time) : null, reduced), [overlay, reduced]);
+  const frame: Frame | null = useMemo(() => settle(timeline ? frameAt(timeline, time, { still: reduced }) : null, reduced), [timeline, time, reduced]);
+  const over: Frame | null = useMemo(() => settle(overlay ? frameAt(overlay.timeline, overlay.time, { still: reduced }) : null, reduced), [overlay, reduced]);
   // While an answer is drawn over a paused board, only the answer's pen moves.
   const pen = showPen ? penPosition(over ? over.active : (frame?.active ?? null)) : null;
   const label = frame?.scene ? `Whiteboard: ${frame.scene.title}` : "Whiteboard";
@@ -69,15 +70,27 @@ export function Board({ timeline, time, overlay, interactive = false, focusedId 
       <rect width={BOARD_W} height={BOARD_H} fill={`url(#${uid}-dots)`} />
 
       <g>
-        {frame?.items.map(({ el, p, bump, age }) => (
-          <ElementView key={`${el.sceneId}:${el.id}`} el={el} p={p} bump={bump} age={age} uid={uid} interactive={interactive && !overlay} focused={focusedId === el.id} onAsk={onAsk} />
+        {frame?.items.map(({ el, p, bump, age, since, motion }) => (
+          <ElementView
+            key={`${el.sceneId}:${el.id}`}
+            el={el}
+            p={p}
+            bump={bump}
+            age={age}
+            since={since}
+            motion={motion}
+            uid={uid}
+            interactive={interactive && !overlay}
+            focused={focusedId === el.id}
+            onAsk={onAsk}
+          />
         ))}
       </g>
 
       {over && (
         <g>
-          {over.items.map(({ el, p, bump, age }) => (
-            <ElementView key={`ov:${el.sceneId}:${el.id}`} el={el} p={p} bump={bump} age={age} uid={`${uid}ov`} interactive={false} focused={false} />
+          {over.items.map(({ el, p, bump, age, since, motion }) => (
+            <ElementView key={`ov:${el.sceneId}:${el.id}`} el={el} p={p} bump={bump} age={age} since={since} motion={motion} uid={`${uid}ov`} interactive={false} focused={false} />
           ))}
         </g>
       )}

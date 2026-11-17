@@ -10,6 +10,8 @@ import { fitText, wrap } from "@/lib/board/text";
 import { compileExpr, parsePlot } from "@/lib/board/expr";
 import { resolveIcon } from "@/lib/board/icons";
 import { BOARD_H, BOARD_W } from "@/lib/board/constants";
+import { parseSketch } from "@/lib/board/sketch";
+import { motionTransform } from "@/lib/board/motion";
 
 const allReady = (secondsPerSegment = 6) => {
   const m = new Map<string, AudioInfo>();
@@ -318,5 +320,144 @@ describe("animation details", () => {
     expect(arrow.parts.some((p) => p.type === "flow")).toBe(true);
     const later = frameAt(tl, arrow.start + arrow.dur + 2).items.find((i) => i.el.id === "a1")!;
     expect(later.age).toBeCloseTo(2);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* Drawing tools: sketches, motions, charts, and how arrows are routed */
+/* ------------------------------------------------------------------ */
+
+type P2 = [number, number];
+const act = (a: Partial<Action> & Pick<Action, "id" | "kind">): Action => ({ cue: "x", text: null, items: null, icon: null, at: null, from: null, to: null, target: null, color: null, expr: null, ...a });
+const trailOf = (e: { parts: { type: string }[] }): P2[] => (e.parts.find((p) => p.type === "stroke" && (p as { trail?: P2[] }).trail) as unknown as { trail: P2[] }).trail;
+const translateOf = (s?: string): P2 => {
+  const m = s?.match(/^translate\((-?[\d.]+) (-?[\d.]+)\)/);
+  return m ? [Number(m[1]), Number(m[2])] : [0, 0];
+};
+
+describe("sketches", () => {
+  it("maps shapes from the 0–100 square into the box and skips what it can't read", () => {
+    const shapes = parseSketch(["circle 50 50 20", "fill blue rect 10 10 20 20", "arrow 10 90 90 90", "text 50 5 hello", "M 0 0 L 100 100", "nonsense 1 2", "circle 1"], { x: 100, y: 100, w: 200, h: 200 });
+    expect(shapes).toHaveLength(5);
+    const [circle, rect, arrow, label, raw] = shapes;
+    for (const [x, y] of circle.trail) {
+      expect(Math.hypot(x - 200, y - 200)).toBeCloseTo(40, 0);
+    }
+    expect(rect).toMatchObject({ fill: "hatch", color: "blue", closed: true });
+    expect(arrow.head?.[1]).toEqual([280, 280]);
+    expect(label.text).toMatchObject({ words: "hello", x: 200, y: 110 });
+    expect(label.text!.size).toBeGreaterThanOrEqual(22);
+    expect(raw.d).toBe("M100 100 L300 300");
+  });
+
+  it("bounds a sketch by what's drawn, not by its whole cell", () => {
+    const { elements, warnings } = layoutScene([act({ id: "s", kind: "sketch", items: ["circle 50 50 15"], text: "Cell", at: { col: 2, row: 1, w: 4, h: 4 } })]);
+    expect(warnings).toEqual([]);
+    const [s] = elements;
+    const cell = cellRect({ col: 2, row: 1, w: 4, h: 4 });
+    expect(s.bbox.w).toBeLessThan(cell.w * 0.6);
+    expect(s.art!.h).toBeLessThan(s.bbox.h);
+  });
+});
+
+describe("motions", () => {
+  const scene = (actions: Action[]) => layoutScene(actions).elements;
+
+  it("keeps an orbit on the board, and the element glides onto its ring", () => {
+    const els = scene([
+      act({ id: "sun", kind: "icon", icon: "sun", text: "Sun", at: { col: 1, row: 2, w: 2, h: 2 } }),
+      act({ id: "earth", kind: "icon", icon: "earth", text: "Earth", at: { col: 7, row: 2, w: 2, h: 2 } }),
+      act({ id: "o", kind: "orbit", target: "earth", to: "sun" }),
+    ]);
+    const orbit = els.find((e) => e.id === "o")!;
+    const earth = els.find((e) => e.id === "earth")!;
+    for (const [x, y] of trailOf(orbit)) {
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(x).toBeLessThanOrEqual(BOARD_W);
+      expect(y).toBeLessThanOrEqual(BOARD_H);
+    }
+    const m = orbit.motion!;
+    expect(m.radius).toBeDefined();
+    // Once it has settled, the element's centre rides exactly on the ring.
+    const [dx, dy] = translateOf(motionTransform([{ ...m, start: 0 }], earth.bbox, 5)!.move);
+    const [cx, cy] = [earth.bbox.x + earth.bbox.w / 2 + dx, earth.bbox.y + earth.bbox.h / 2 + dy];
+    const [ox, oy] = m.center!;
+    expect(((cx - ox) / m.radius!) ** 2 + ((cy - oy) / (m.radius! * m.ky!)) ** 2).toBeCloseTo(1, 2);
+  });
+
+  it("spins and swings a drawing about the drawing itself, not its caption", () => {
+    const els = scene([act({ id: "g", kind: "icon", icon: "cog", text: "Gear", at: { col: 0, row: 3, w: 2, h: 2 } })]);
+    const gear = els[0];
+    const art = gear.art!;
+    expect(art.y + art.h / 2).toBeLessThan(gear.bbox.y + gear.bbox.h / 2);
+    const spin = motionTransform([{ type: "spin", targets: ["g"], start: 0 }], gear.bbox, 2, false, art)!;
+    const [, px, py] = spin.turn!.match(/rotate\(-?[\d.]+ (-?[\d.]+) (-?[\d.]+)\)/)!.map(Number);
+    expect(px).toBeCloseTo(art.x + art.w / 2, 0);
+    expect(py).toBeCloseTo(art.y + art.h / 2, 0);
+    const swing = motionTransform([{ type: "swing", targets: ["g"], start: 0 }], gear.bbox, 0.5, false, art)!;
+    expect(swing.turn).toMatch(new RegExp(` ${Math.round(art.y * 10) / 10}\\)$`));
+    // Captions never rotate, and with reduced motion nothing keeps moving.
+    expect(spin.move).toBeUndefined();
+    expect(motionTransform([{ type: "spin", targets: ["g"], start: 0 }], gear.bbox, 2, true, art)).toBeUndefined();
+  });
+
+  it("finishes one-off moves even with reduced motion", () => {
+    const box = { x: 0, y: 0, w: 100, h: 100 };
+    const to = { x: 600, y: 0, w: 100, h: 100 };
+    const live = motionTransform([{ type: "move", targets: ["a"], toBox: to, start: 0 }], box, 0.5)!;
+    const still = motionTransform([{ type: "move", targets: ["a"], toBox: to, start: 0 }], box, 0.5, true)!;
+    expect(translateOf(live.move)[0]).toBeGreaterThan(0);
+    expect(translateOf(still.move)[0]).toBeGreaterThan(translateOf(live.move)[0]);
+  });
+});
+
+describe("charts", () => {
+  it("builds pies whose wedges make a whole circle, tables with a header, and timelines with events", () => {
+    const { elements, warnings } = layoutScene([
+      act({ id: "pie", kind: "pie", items: ["A: 50", "B: 30", "C: 20"], at: { col: 0, row: 0, w: 5, h: 3 } }),
+      act({ id: "vs", kind: "compare", items: ["X | Y", "1 | 2", "3 | 4"], at: { col: 6, row: 0, w: 6, h: 3 } }),
+      act({ id: "tl", kind: "timeline", items: ["1900: Start", "1950: Middle", "2000: End"], at: { col: 0, row: 4, w: 12, h: 2 } }),
+      act({ id: "gas", kind: "particles", expr: "12 fast", at: { col: 6, row: 3, w: 3, h: 1 } }),
+    ]);
+    expect(warnings).toEqual([]);
+    const wedges = elements.filter((e) => e.kind === "pie-wedge").flatMap((e) => e.parts.filter((p) => p.type === "wedge")) as unknown as { a0: number; a1: number }[];
+    expect(wedges).toHaveLength(3);
+    expect(wedges.reduce((s, w) => s + (w.a1 - w.a0), 0)).toBeCloseTo(Math.PI * 2);
+    expect(elements.filter((e) => e.actionId === "vs").map((e) => e.kind)).toEqual(["compare-head", "compare-row", "compare-row"]);
+    expect(elements.filter((e) => e.kind === "timeline-event")).toHaveLength(3);
+    const gas = elements.find((e) => e.id === "gas")!;
+    expect(gas.ambient).toBe(true);
+    expect(gas.parts.find((p) => p.type === "particles")).toMatchObject({ n: 12 });
+  });
+});
+
+describe("arrow routing", () => {
+  const box = (id: string, col: number, row: number, w = 2, h = 1) => act({ id, kind: "box", text: id.toUpperCase(), at: { col, row, w, h } });
+
+  it("runs a pair of arrows going there and back side by side, labels apart", () => {
+    const { elements } = layoutScene([
+      box("plants", 0, 2),
+      box("animals", 9, 2),
+      act({ id: "o2", kind: "arrow", from: "plants", to: "animals", text: "Oxygen" }),
+      act({ id: "co2", kind: "arrow", from: "animals", to: "plants", text: "Carbon dioxide" }),
+    ]);
+    const there = trailOf(elements.find((e) => e.id === "o2")!);
+    const back = trailOf(elements.find((e) => e.id === "co2")!);
+    expect(there.at(-1)![0]).toBeGreaterThan(there[0][0]);
+    expect(back.at(-1)![0]).toBeLessThan(back[0][0]);
+    expect(Math.abs(there[0][1] - back[0][1])).toBeGreaterThan(24);
+    const labelY = (id: string) => (elements.find((e) => e.id === id)!.parts.find((p) => p.type === "text") as unknown as { y: number }).y;
+    expect(Math.abs(labelY("o2") - labelY("co2"))).toBeGreaterThan(40);
+  });
+
+  it("curves an arrow between elements too close for a straight one, still pointing the right way", () => {
+    const { elements } = layoutScene([box("leaf", 5, 2, 2, 2), box("water", 5, 4, 2, 2), act({ id: "up", kind: "arrow", from: "water", to: "leaf" })]);
+    const leaf = elements.find((e) => e.id === "leaf")!;
+    const route = trailOf(elements.find((e) => e.id === "up")!);
+    expect(route.length).toBeGreaterThan(2);
+    const [start, end] = [route[0], route.at(-1)!];
+    expect(end[1]).toBeLessThan(start[1]);
+    expect(end[1]).toBeGreaterThanOrEqual(leaf.bbox.y);
+    expect(end[1]).toBeLessThanOrEqual(leaf.bbox.y + leaf.bbox.h);
   });
 });

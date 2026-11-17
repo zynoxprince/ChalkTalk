@@ -59,3 +59,6 @@ export const roughCurve = (points: [number, number][], seed: number, extra?: Opt
 
 export const roughLinear = (points: [number, number][], seed: number, extra?: Options) =>
   toPaths(gen.linearPath(points, base(seed, { roughness: 0.8, ...extra })));
+
+/** Any SVG path (already in board coordinates), hand-drawn. */
+export const roughPath = (d: string, seed: number, extra?: Options) => toPaths(gen.path(d, base(seed, { roughness: 0.7, bowing: 0.5, ...extra })));

@@ -2,9 +2,11 @@ import {
   isAnnotationKind,
   isConnectorKind,
   isElementKind,
+  isMotionKind,
   type Action,
   type Cell,
   type Color,
+  type MotionKind,
 } from "@/lib/lesson/schema";
 import {
   BOARD_BG,
@@ -24,7 +26,9 @@ import {
 import { countsUp, parseNumber, type NumberParts } from "./anim";
 import { iconNodes, resolveIcon, type IconNode } from "./icons";
 import { parsePlot } from "./expr";
-import { hatchFill, roughCurve, roughEllipse, roughLine, roughLinear, roughRect, seedFrom, type RoughPath } from "./rough";
+import type { MotionSpec } from "./motion";
+import { hatchFill, roughCurve, roughEllipse, roughLine, roughLinear, roughPath, roughRect, seedFrom, type RoughPath } from "./rough";
+import { parseSketch } from "./sketch";
 import { fitText, textWidth } from "./text";
 
 export interface Rect {
@@ -106,6 +110,10 @@ export type Part =
       a: number;
       b: number;
     }
+  /** A pie wedge sweeping open from a0 to a1 (radians, clockwise from 12 o'clock). */
+  | { type: "wedge"; cx: number; cy: number; r: number; a0: number; a1: number; color: string; tint: string; a: number; b: number }
+  /** Particles bouncing around a box; positions are a function of time. */
+  | { type: "particles"; x: number; y: number; w: number; h: number; n: number; speed: number; r: number; color: string; seed: number; a: number; b: number }
   /** A number that counts up from zero as it's written. */
   | {
       type: "count";
@@ -145,6 +153,10 @@ export interface BoardElement {
   targets?: string[];
   /** Elements that must already be on the board before this one starts (what an arrow joins, what a note points at). */
   deps?: string[];
+  /** For motion actions: which elements move and how (applied to them by the timeline). */
+  motion?: MotionSpec;
+  /** The drawing without its caption (spins and swings pivot on it). */
+  art?: Rect;
 }
 
 export interface SceneLayout {
@@ -316,6 +328,13 @@ const DEFAULT_SIZE: Record<string, { w: number; h: number }> = {
   flow: { w: 10, h: 2 },
   cycle: { w: 6, h: 4 },
   plot: { w: 5, h: 4 },
+  bars: { w: 6, h: 4 },
+  number: { w: 3, h: 2 },
+  sketch: { w: 3, h: 3 },
+  particles: { w: 3, h: 3 },
+  timeline: { w: 10, h: 2 },
+  pie: { w: 5, h: 3 },
+  compare: { w: 8, h: 4 },
 };
 
 export function clampCell(c: Cell): Cell {
@@ -478,14 +497,16 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
         { type: "icon", nodes, x: ix, y: iy, size, color, a: 0.08, b: text ? 0.72 : 1 },
       ];
       if (text) parts.push({ ...textPart(text, { x: r.x - 10, y: r.y + r.h - capH, w: r.w + 20, h: capH }, INK.ink, { max: 46, min: 18, maxLines: 2, anchor: "middle" }).part, a: 0.62, b: 1 });
-      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text || name, bbox: r, parts, natural: 1.15 + (text ? textDur(text) * 0.5 : 0) })];
+      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text || name, bbox: r, art: { x: ix, y: iy, w: size, h: size }, parts, natural: 1.15 + (text ? textDur(text) * 0.5 : 0) })];
     }
     case "list": {
       const items = (a.items ?? []).map((s) => s.trim()).filter(Boolean).slice(0, 6);
       if (!items.length && text) items.push(text);
       if (!items.length) return [];
       const r = inset(rect, 10);
-      const indent = 34;
+      // Bullets can be small drawings ("check" for takeaways) instead of dots.
+      const bulletIcon = a.icon ? iconNodes(resolveIcon(a.icon) ?? "") : null;
+      const indent = bulletIcon ? 52 : 34;
       let size = 54;
       let wrapped: ReturnType<typeof fitText>[] = [];
       for (; size >= 20; size -= 2) {
@@ -500,6 +521,10 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
         const h = f.lines.length * size * 1.12;
         const by = y + size * 0.45;
         const bullet = roughEllipse(r.x + 10, by, 13, 13, seed + k, { stroke: color, strokeWidth: 3, fill: color, fillStyle: "solid" });
+        const iconSize = Math.min(40, size * 0.85);
+        const bulletParts: Part[] = bulletIcon
+          ? [{ type: "icon", nodes: bulletIcon, x: r.x, y: by - iconSize / 2, size: iconSize, color, a: 0, b: 0.2 }]
+          : strokeParts(bullet, color, 3, 0, 0.12, undefined, { color, a: 0, b: 0.15, origin: [r.x + 10, by] });
         const tx = r.x + indent;
         const part: Part = { type: "text", x: tx, y: y + size * 0.8, lines: f.lines, size, lineHeight: 1.12, color: INK.ink, anchor: "start", weight: 600, widths: f.lines.map((l) => textWidth(l, size)), a: 0.15, b: 1 };
         const bbox = { x: tx, y, w: f.width, h };
@@ -510,7 +535,7 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
           kind: "list-item",
           label: it,
           bbox,
-          parts: [...strokeParts(bullet, color, 3, 0, 0.12, undefined, { color, a: 0, b: 0.15, origin: [r.x + 10, by] }), part],
+          parts: [...bulletParts, part],
           natural: textDur(it) + 0.15,
           seq: k,
           seqCount: items.length,
@@ -554,7 +579,7 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
           const nx = nodes[k + 1];
           const p1: Pt = horizontal ? [nr.x + nr.w + 8, nr.y + nr.h / 2] : [nr.x + nr.w / 2, nr.y + nr.h + 6];
           const p2: Pt = horizontal ? [nx.x - 10, nx.y + nx.h / 2] : [nx.x + nx.w / 2, nx.y - 8];
-          out.push(arrowElement(`${a.id}.a${k}`, a.id, p1, p2, color, null, seed + k * 13, k * 2 + 1, n * 2 - 1, true, true));
+          out.push(arrowElement(`${a.id}.a${k}`, a.id, [p1, p2], color, null, seed + k * 13, { seq: k * 2 + 1, seqCount: n * 2 - 1, flow: true }));
         }
       });
       return out;
@@ -783,6 +808,255 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
       if (caption) parts.push({ ...textPart(caption, { x: r.x - 10, y: r.y + r.h - capH, w: r.w + 20, h: capH }, INK.ink, { max: 40, min: 16, maxLines: 2, anchor: "middle" }).part, a: 0.7, b: 1 });
       return [el({ id: a.id, actionId: a.id, kind: a.kind, label: caption ? `${text} ${caption}` : text, bbox: r, parts, natural: 1.5 + (caption ? textDur(caption) * 0.4 : 0) })];
     }
+    case "sketch": {
+      // The model's own line drawing, drawn shape by shape in the board's hand-drawn style.
+      const r = inset(rect, 10);
+      const capH = text ? Math.min(52, r.h * 0.2) : 0;
+      const box: Rect = { x: r.x, y: r.y, w: r.w, h: r.h - capH };
+      const shapes = parseSketch(a.items, box);
+      if (!shapes.length) {
+        warnings.push(`sketch ${a.id}: no shapes it could draw`);
+        return text ? buildElement({ ...a, kind: "box" }, rect, warnings) : [];
+      }
+      const n = shapes.length;
+      const span = text ? 0.86 : 1;
+      const parts: Part[] = [];
+      // The drawing's own bounds: arrows, notes and the camera go to what's drawn, not to empty space around it.
+      const bounds: Rect[] = [];
+      shapes.forEach((sh, i) => {
+        const a0 = (i / n) * span;
+        const a1 = ((i + 1) / n) * span;
+        const c = sh.color ? INK[sh.color] : color;
+        if (sh.text) {
+          const tb: Rect = { x: sh.text.x - 140, y: sh.text.y - sh.text.size * 0.75, w: 280, h: sh.text.size * 1.5 };
+          const t = textPart(sh.text.words, tb, c, { max: sh.text.size, min: 14, maxLines: 1, anchor: "middle" });
+          parts.push({ ...t.part, a: a0, b: a1 });
+          bounds.push(t.bbox);
+          return;
+        }
+        bounds.push(inset(union([...sh.trail, ...(sh.head ?? [])].map(([x, y]) => ({ x, y, w: 0, h: 0 }))), -4));
+        const tint = tintOf(sh.color ?? a.color);
+        const fillOpts = sh.closed && sh.fill === "hatch" ? hatchFill(tint, 10) : sh.fill === "solid" ? { fill: c, fillStyle: "solid" } : {};
+        const paths = roughPath(sh.d, seed + i * 11, { stroke: c, strokeWidth: 3, ...fillOpts });
+        parts.push(
+          ...strokeParts(
+            paths,
+            c,
+            3,
+            a0,
+            a0 + (a1 - a0) * (sh.fill === "hatch" ? 0.6 : 1),
+            sh.trail,
+            sh.fill === "solid" ? { color: c, a: a0 + (a1 - a0) * 0.5, b: a1, opacity: 0.9 } : undefined,
+            sh.fill === "hatch" ? { color: tint, a: a0 + (a1 - a0) * 0.5, b: a1, opacity: 0.85 } : undefined,
+          ),
+        );
+        if (sh.head) parts.push(...strokeParts(roughLinear(sh.head, seed + i * 13, { stroke: c, strokeWidth: 3 }), c, 3, a0 + (a1 - a0) * 0.8, a1));
+      });
+      const art = union(bounds);
+      let bbox = art;
+      if (text) {
+        // The caption sits just under the drawing, centred on it.
+        const capY = Math.min(r.y + r.h - capH, art.y + art.h + 4);
+        const cx = clamp(art.x + art.w / 2, r.x + r.w / 2 - 20, r.x + r.w / 2 + 20);
+        const cap = textPart(text, { x: cx - r.w / 2 - 10, y: capY, w: r.w + 20, h: capH }, INK.ink, { max: 44, min: 16, maxLines: 1, anchor: "middle" });
+        parts.push({ ...cap.part, a: 0.86, b: 1 });
+        bbox = union([art, cap.bbox]);
+      }
+      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text || "the drawing", bbox: inset(bbox, -6), art, parts, natural: Math.min(3.4, 0.5 + n * 0.4) + (text ? 0.4 : 0) })];
+    }
+    case "particles": {
+      // Particles bouncing around a box: gas, heat, diffusion, crowds.
+      const r = inset(rect, 10);
+      const capH = text ? Math.min(46, r.h * 0.2) : 0;
+      const box: Rect = { x: r.x, y: r.y, w: r.w, h: r.h - capH };
+      const spec = (a.expr ?? "").toLowerCase();
+      const count = clampInt(Number(spec.match(/\d+/)?.[0] ?? 14), 3, 30);
+      const speed = /very fast|hot/.test(spec) ? 230 : /fast/.test(spec) ? 150 : /slow|cold/.test(spec) ? 40 : 85;
+      const inner = inset(box, 14);
+      const parts: Part[] = [
+        ...strokeParts(roughRect(box.x, box.y, box.w, box.h, seed, { stroke: color, strokeWidth: 2.5, roughness: 0.9 }), color, 2.5, 0, 0.45, rectPerimeter(box)),
+        { type: "particles", x: inner.x, y: inner.y, w: inner.w, h: inner.h, n: count, speed, r: clamp(Math.min(inner.w, inner.h) / 34, 5, 10), color, seed, a: 0.35, b: 0.7 },
+      ];
+      if (text) parts.push({ ...textPart(text, { x: r.x - 10, y: r.y + r.h - capH, w: r.w + 20, h: capH }, INK.ink, { max: 40, min: 16, maxLines: 1, anchor: "middle" }).part, a: 0.7, b: 1 });
+      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text || "particles", bbox: r, parts, natural: 1.4, ambient: true })];
+    }
+    case "timeline": {
+      // Events along a line, labels alternating above and below; short "dates" become numbered stops.
+      const events = (a.items ?? [])
+        .map((it) => {
+          const i = it.indexOf(":");
+          return i > 0 ? { date: it.slice(0, i).trim(), label: it.slice(i + 1).trim() } : { date: "", label: it.trim() };
+        })
+        .filter((e) => e.label)
+        .slice(0, 7);
+      if (events.length < 2) return buildElement({ ...a, kind: "list" }, rect, warnings);
+      const r = inset(rect, 10);
+      const n = events.length;
+      const axisY = r.y + r.h / 2;
+      const xs = events.map((_, k) => r.x + (r.w * (k + 0.5)) / n);
+      const [h1, h2] = arrowHead([r.x + r.w, axisY], [r.x, axisY], 18);
+      const axis = el({
+        id: `${a.id}.axis`,
+        actionId: a.id,
+        kind: "timeline-axis",
+        label: null,
+        bbox: { x: r.x, y: axisY - 10, w: r.w, h: 20 },
+        parts: [
+          ...strokeParts(roughLine(r.x, axisY, r.x + r.w, axisY + 2, seed, { stroke: INK.ink, strokeWidth: 3 }), INK.ink, 3, 0, 0.85, [[r.x, axisY], [r.x + r.w, axisY]]),
+          ...strokeParts(roughLinear([h1, [r.x + r.w, axisY], h2], seed + 1, { stroke: INK.ink, strokeWidth: 3 }), INK.ink, 3, 0.85, 1),
+        ],
+        natural: 0.7,
+        clickable: false,
+        seq: 0,
+        seqCount: n + 1,
+      });
+      const slotW = Math.min(r.w / n, 320) * 1.55;
+      const items = events.map((e, k) => {
+        const x = xs[k];
+        const up = k % 2 === 0;
+        const numbered = e.date.length > 0 && e.date.length <= 3;
+        const parts: Part[] = [];
+        let markerBox: Rect;
+        if (numbered) {
+          const d = 50;
+          parts.push(
+            ...strokeParts(roughEllipse(x, axisY, d, d, seed + k * 7, { stroke: color, strokeWidth: 3, fill: washOf(a.color, "blue"), fillStyle: "solid" }), color, 3, 0, 0.3, ellipsePoints(x, axisY, d / 2, d / 2), {
+              color: washOf(a.color, "blue"),
+              a: 0,
+              b: 0.08,
+              origin: [x, axisY],
+            }),
+            { ...textPart(e.date, { x: x - d / 2, y: axisY - d / 2, w: d, h: d }, color, { max: 30, min: 16, maxLines: 1, anchor: "middle" }).part, weight: 700, a: 0.2, b: 0.35 },
+          );
+          markerBox = { x: x - d / 2, y: axisY - d / 2, w: d, h: d };
+        } else {
+          parts.push(...strokeParts(roughEllipse(x, axisY, 18, 18, seed + k * 7, { stroke: color, strokeWidth: 3, fill: color, fillStyle: "solid" }), color, 3, 0, 0.15, undefined, { color, a: 0, b: 0.15, origin: [x, axisY] }));
+          const dateBox: Rect = { x: x - slotW / 2, y: up ? axisY - 52 : axisY + 14, w: slotW, h: 38 };
+          if (e.date) parts.push({ ...textPart(e.date, dateBox, color, { max: 32, min: 16, maxLines: 1, anchor: "middle" }).part, weight: 700, a: 0.1, b: 0.4 });
+          markerBox = { x: x - 9, y: axisY - 9, w: 18, h: 18 };
+        }
+        const gap = numbered ? 34 : e.date ? 58 : 18;
+        const labelBox: Rect = up ? { x: x - slotW / 2, y: r.y, w: slotW, h: axisY - gap - r.y } : { x: x - slotW / 2, y: axisY + gap, w: slotW, h: r.y + r.h - axisY - gap };
+        const label = textPart(e.label, labelBox, INK.ink, { max: 38, min: 15, maxLines: 3, anchor: "middle" });
+        parts.push({ ...label.part, a: 0.35, b: 1 });
+        return el({
+          id: `${a.id}.${k}`,
+          actionId: a.id,
+          kind: "timeline-event",
+          label: e.date ? `${e.date}: ${e.label}` : e.label,
+          bbox: union([markerBox, label.bbox]),
+          parts,
+          natural: 0.5 + textDur(e.label) * 0.6,
+          seq: k + 1,
+          seqCount: n + 1,
+        });
+      });
+      return [axis, ...items];
+    }
+    case "pie": {
+      // Shares of a whole: wedges sweep open one by one, with a legend of percentages.
+      const entries = parseBars(a.items).filter((e) => e.value > 0);
+      const total = entries.reduce((sum, e) => sum + e.value, 0);
+      if (entries.length < 2 || total <= 0) return buildElement({ ...a, kind: "list" }, rect, warnings);
+      const r = inset(rect, 10);
+      const titleH = text ? clamp(r.h * 0.14, 28, 46) : 0;
+      const area: Rect = { x: r.x, y: r.y + titleH, w: r.w, h: r.h - titleH };
+      const rad = Math.max(40, Math.min(area.h / 2 - 8, area.w * 0.26));
+      const cx = area.x + rad + 10;
+      const cy = area.y + area.h / 2;
+      const legendX = cx + rad + 34;
+      const rowH = Math.min(56, area.h / entries.length);
+      const legendTop = cy - (rowH * entries.length) / 2;
+      const palette: Color[] = ["blue", "orange", "green", "purple", "red", "ink"];
+      const ring = el({
+        id: `${a.id}.ring`,
+        actionId: a.id,
+        kind: "pie-ring",
+        label: text || null,
+        bbox: { x: cx - rad, y: cy - rad, w: rad * 2, h: rad * 2 },
+        parts: [
+          ...strokeParts(roughEllipse(cx, cy, rad * 2, rad * 2, seed, { stroke: INK.ink, strokeWidth: 2.5 }), INK.ink, 2.5, 0, 0.7, ellipsePoints(cx, cy, rad, rad)),
+          ...(text ? [{ ...textPart(text, { x: r.x, y: r.y, w: r.w, h: titleH }, color, { max: 40, min: 18, maxLines: 1, anchor: "middle" }).part, a: 0.3, b: 1 } as Part] : []),
+        ],
+        natural: text ? 0.6 + textDur(text) * 0.5 : 0.6,
+        clickable: false,
+        seq: 0,
+        seqCount: entries.length + 1,
+      });
+      let acc = 0;
+      const wedges = entries.map((e, k) => {
+        const tone = palette[k % palette.length];
+        const a0 = (acc / total) * Math.PI * 2;
+        acc += e.value;
+        const a1 = (acc / total) * Math.PI * 2;
+        const pct = `${Math.round((e.value / total) * 100)}%`;
+        const ly = legendTop + k * rowH;
+        const swatch = roughRect(legendX, ly + rowH * 0.22, rowH * 0.5, rowH * 0.5, seed + k * 5, { stroke: INK[tone], strokeWidth: 2, fill: HATCH[tone], fillStyle: "solid" });
+        const legend = textPart(`${e.label} · ${pct}`, { x: legendX + rowH * 0.7, y: ly, w: Math.max(80, r.x + r.w - legendX - rowH * 0.7), h: rowH }, INK.ink, { max: 34, min: 14, maxLines: 1 });
+        return el({
+          id: `${a.id}.${k}`,
+          actionId: a.id,
+          kind: "pie-wedge",
+          label: `${e.label}: ${pct}`,
+          bbox: union([{ x: cx - rad, y: cy - rad, w: rad * 2, h: rad * 2 }, legend.bbox]),
+          parts: [
+            { type: "wedge", cx, cy, r: rad, a0, a1, color: INK[tone], tint: HATCH[tone], a: 0, b: 0.75 },
+            ...strokeParts(swatch, INK[tone], 2, 0.3, 0.5, undefined, { color: HATCH[tone], a: 0.3, b: 0.4 }),
+            { ...legend.part, a: 0.45, b: 1 },
+          ],
+          natural: 1.1,
+          seq: k + 1,
+          seqCount: entries.length + 1,
+        });
+      });
+      return [ring, ...wedges];
+    }
+    case "compare": {
+      // A small table: headers first, then one row at a time.
+      const rows = (a.items ?? [])
+        .map((it) => it.split("|").map((c) => c.trim()))
+        .filter((cells) => cells.length >= 2)
+        .slice(0, 6);
+      if (rows.length < 2) return buildElement({ ...a, kind: "list", items: (a.items ?? []).map((it) => it.replace(/\s*\|\s*/g, " — ")) }, rect, warnings);
+      const cols = Math.min(3, Math.max(...rows.map((cells) => cells.length)));
+      const r = inset(rect, 10);
+      const headH = r.h / (rows.length + 0.25) * 1.25;
+      const rowH = (r.h - headH) / (rows.length - 1);
+      const colW = r.w / cols;
+      const tint = washOf(a.color, "blue");
+      const size = Math.min(40, rowH * 0.42);
+      const cellPart = (txt: string, i: number, y: number, h: number, c: string, weight: number, a0: number, b0: number): Part => ({
+        ...textPart(txt, { x: r.x + i * colW + 10, y: y + 4, w: colW - 20, h: h - 8 }, c, { max: size, min: 14, maxLines: 2, anchor: "middle" }).part,
+        weight,
+        a: a0,
+        b: b0,
+      });
+      const lines: Part[] = [
+        ...strokeParts(roughRect(r.x, r.y, r.w, r.h, seed, { stroke: color, strokeWidth: 2.5, roughness: 0.8 }), color, 2.5, 0, 0.35, rectPerimeter(r)),
+        ...Array.from({ length: cols - 1 }, (_, i) => strokeParts(roughLine(r.x + (i + 1) * colW, r.y, r.x + (i + 1) * colW, r.y + r.h, seed + 3 + i, { stroke: color, strokeWidth: 2 }), color, 2, 0.2, 0.45)).flat(),
+        ...strokeParts(roughLine(r.x, r.y + headH, r.x + r.w, r.y + headH, seed + 9, { stroke: color, strokeWidth: 2.5 }), color, 2.5, 0.35, 0.5),
+      ];
+      const headFill = roughRect(r.x + 3, r.y + 3, r.w - 6, headH - 6, seed + 11, { fill: tint, fillStyle: "solid", stroke: "none" });
+      const head = el({
+        id: `${a.id}.head`,
+        actionId: a.id,
+        kind: "compare-head",
+        label: rows[0].join(" vs "),
+        bbox: r,
+        parts: [...strokeParts(headFill, color, 0, 0, 0, undefined, { color: tint, a: 0, b: 0.15, opacity: 0.8 }), ...lines, ...rows[0].slice(0, cols).map((h, i) => cellPart(h, i, r.y, headH, color, 700, 0.5 + i * 0.1, 0.8 + i * 0.07))],
+        natural: 1.2,
+        clickable: false,
+        seq: 0,
+        seqCount: rows.length,
+      });
+      const body = rows.slice(1).map((cells, k) => {
+        const y = r.y + headH + k * rowH;
+        const parts: Part[] = cells.slice(0, cols).map((c, i) => cellPart(c, i, y, rowH, INK.ink, 600, (i / cols) * 0.9, ((i + 1) / cols) * 0.9 + 0.1));
+        if (k < rows.length - 2) parts.push(...strokeParts(roughLine(r.x + 6, y + rowH, r.x + r.w - 6, y + rowH, seed + 20 + k, { stroke: HATCH[a.color ?? "ink"], strokeWidth: 2 }), HATCH[a.color ?? "ink"], 2, 0, 0.3));
+        return el({ id: `${a.id}.${k}`, actionId: a.id, kind: "compare-row", label: cells.join(" | "), bbox: { x: r.x, y, w: r.w, h: rowH }, parts, natural: 0.4 + textDur(cells.join(" ")) * 0.6, seq: k + 1, seqCount: rows.length });
+      });
+      return [head, ...body];
+    }
     default:
       return [];
   }
@@ -814,30 +1088,143 @@ export function parseBars(items: string[] | null): { label: string; value: numbe
 
 const polyD = (pts: Pt[]) => pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
 
-function arrowElement(id: string, actionId: string, p1: Pt, p2: Pt, color: string, label: string | null, seed: number, seq = 0, seqCount = 1, head = true, flow = false): BoardElement {
-  const parts: Part[] = strokeParts(roughLine(p1[0], p1[1], p2[0], p2[1], seed, { stroke: color, strokeWidth: 3 }), color, 3, 0, head ? 0.75 : 1, [p1, p2]);
+/** The polyline with its last `cut` units removed. */
+function trimEnd(pts: Pt[], cut: number): Pt[] {
+  const out = [...pts];
+  let left = cut;
+  while (out.length > 2 && left > 0) {
+    const [a, b] = [out[out.length - 2], out[out.length - 1]];
+    const seg = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (seg > left) break;
+    out.pop();
+    left -= seg;
+  }
+  const [a, b] = [out[out.length - 2], out[out.length - 1]];
+  const seg = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+  const k = Math.max(0, (seg - left) / seg);
+  out[out.length - 1] = [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+  return out;
+}
+
+/** The point halfway along a polyline. */
+function midAlong(pts: Pt[]): Pt {
+  const half = pathLength(pts) / 2;
+  let acc = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const [a, b] = [pts[i - 1], pts[i]];
+    const seg = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    if (acc + seg >= half) {
+      const k = seg ? (half - acc) / seg : 0;
+      return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k];
+    }
+    acc += seg;
+  }
+  return pts[pts.length - 1];
+}
+
+interface ArrowOpts {
+  seq?: number;
+  seqCount?: number;
+  head?: boolean;
+  /** Beads keep flowing along it once it's drawn. */
+  flow?: boolean;
+  /** Where the label goes: 1 = above (right of a vertical arrow), -1 = below (left of it). */
+  side?: 1 | -1;
+}
+
+/** An arrow along a route: two points for a straight one, more for a curve. */
+function arrowElement(id: string, actionId: string, route: Pt[], color: string, label: string | null, seed: number, opts: ArrowOpts = {}): BoardElement {
+  const { seq = 0, seqCount = 1, head = true, flow = false, side = 1 } = opts;
+  const p1 = route[0];
+  const p2 = route[route.length - 1];
+  const curved = route.length > 2;
+  const shaft = curved ? roughCurve(route, seed, { stroke: color, strokeWidth: 3 }) : roughLine(p1[0], p1[1], p2[0], p2[1], seed, { stroke: color, strokeWidth: 3 });
+  const parts: Part[] = strokeParts(shaft, color, 3, 0, head ? 0.75 : 1, route);
   if (head) {
-    const [h1, h2] = arrowHead(p2, p1, 20);
+    // Aimed along the last stretch of the route.
+    const back = curved ? trimEnd(route, 26) : [p1];
+    const [h1, h2] = arrowHead(p2, back[back.length - 1], 20);
     parts.push(...strokeParts(roughLinear([h1, p2, h2], seed + 1, { stroke: color, strokeWidth: 3 }), color, 3, 0.75, 1));
   }
-  const len = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+  const len = pathLength(route);
   // Beads flow along the shaft once it's drawn (stopping short of the head).
-  if (flow && head && len > 60) {
-    const k = (len - 18) / len;
-    parts.push({ type: "flow", d: polyD([p1, [p1[0] + (p2[0] - p1[0]) * k, p1[1] + (p2[1] - p1[1]) * k]]), color, a: 1, b: 1 });
-  }
-  let bbox = union([{ x: p1[0], y: p1[1], w: 1, h: 1 }, { x: p2[0], y: p2[1], w: 1, h: 1 }]);
+  if (flow && head && len > 60) parts.push({ type: "flow", d: polyD(trimEnd(route, 18)), color, a: 1, b: 1 });
+  let bbox = union(route.map(([x, y]) => ({ x, y, w: 1, h: 1 })));
   if (label) {
-    const mx = (p1[0] + p2[0]) / 2;
-    const my = (p1[1] + p2[1]) / 2;
+    const [mx, my] = midAlong(route);
     const vertical = Math.abs(p2[0] - p1[0]) < Math.abs(p2[1] - p1[1]);
     const w = Math.max(160, Math.min(320, textWidth(label, 30) + 20));
-    const box: Rect = vertical ? { x: mx + 12, y: my - 24, w, h: 48 } : { x: mx - w / 2, y: my - 58, w, h: 46 };
+    const box: Rect = vertical
+      ? { x: side > 0 ? mx + 12 : mx - 12 - w, y: my - 24, w, h: 48 }
+      : { x: mx - w / 2, y: side > 0 ? my - 58 : my + 12, w, h: 46 };
     const t = textPart(label, box, color, { max: 34, min: 18, maxLines: 2, anchor: vertical ? "start" : "middle" });
-    parts.push({ ...t.part, a: 0.55, b: 1 });
-    bbox = union([bbox, t.bbox]);
+    // Left of a vertical arrow, the words end right next to it.
+    const shift = vertical && side < 0 ? box.w - t.bbox.w : 0;
+    parts.push({ ...t.part, x: t.part.x + shift, a: 0.55, b: 1 });
+    bbox = union([bbox, { ...t.bbox, x: t.bbox.x + shift }]);
   }
-  return el({ id, actionId, kind: "arrow", label, bbox, parts, natural: label ? 0.9 : 0.5, seq, seqCount, clickable: !!label, ambient: flow && head && len > 60 });
+  return el({ id, actionId, kind: "arrow", label, bbox, parts, natural: (label ? 0.9 : 0.5) + (curved ? 0.2 : 0), seq, seqCount, clickable: !!label, ambient: flow && head && len > 60 });
+}
+
+/** Points along a quadratic Bézier. */
+function quadPoints(p1: Pt, c: Pt, p2: Pt, n = 16): Pt[] {
+  return Array.from({ length: n + 1 }, (_, i) => {
+    const t = i / n;
+    const u = 1 - t;
+    return [u * u * p1[0] + 2 * u * t * c[0] + t * t * p2[0], u * u * p1[1] + 2 * u * t * c[1] + t * t * p2[1]] as Pt;
+  });
+}
+
+/**
+ * How a connector gets from one element to another: straight across the gap,
+ * shifted sideways by `shift` (so a pair going there and back runs side by
+ * side), or, when the two sit too close for a straight arrow to read, a curve
+ * that loops around the side with more room.
+ */
+function connectorRoute(fromRef: Ref, toRef: Ref, shift: Pt = [0, 0]): { route: Pt[]; side: 1 | -1 } {
+  const [from, to] = [fromRef.bbox, toRef.bbox];
+  const c1 = center(from);
+  const c2 = center(to);
+  const p1 = edgePoint(from, c2, 12);
+  const p2 = edgePoint(to, c1, 14);
+  const dx = c2[0] - c1[0];
+  const dy = c2[1] - c1[1];
+  const d = Math.hypot(dx, dy) || 1;
+  const gap = ((p2[0] - p1[0]) * dx + (p2[1] - p1[1]) * dy) / d;
+  const vertical = Math.abs(dy) >= Math.abs(dx);
+  if (gap >= 44) {
+    const route: Pt[] = [
+      [p1[0] + shift[0], p1[1] + shift[1]],
+      [p2[0] + shift[0], p2[1] + shift[1]],
+    ];
+    // Labels go on the outer side of a shifted pair.
+    const side = vertical ? (shift[0] < 0 ? -1 : 1) : shift[1] > 0 ? -1 : 1;
+    return { route, side };
+  }
+  // The loop leaves and enters at the drawings themselves (an icon, not the space around it).
+  const fa = fromRef.el?.art ?? from;
+  const ta = toRef.el?.art ?? to;
+  if (vertical) {
+    // One above the other: loop around the right or left side.
+    const room = BOARD_W - Math.max(from.x + from.w, to.x + to.w) >= Math.min(from.x, to.x) ? 1 : -1;
+    const s = shift[0] ? (Math.sign(shift[0]) as 1 | -1) : room;
+    const ex = (r: Rect) => (s > 0 ? r.x + r.w + 8 : r.x - 8);
+    const a: Pt = [ex(fa), fa.y + fa.h / 2];
+    const b: Pt = [ex(ta), ta.y + ta.h / 2];
+    const out = (s > 0 ? Math.max(a[0], b[0]) : Math.min(a[0], b[0])) + s * 110;
+    return { route: quadPoints(a, [out, (a[1] + b[1]) / 2], b), side: s };
+  }
+  // Side by side: loop over the top (or underneath, when the title is in the way).
+  const top = Math.min(from.y, to.y);
+  const bottom = Math.max(from.y + from.h, to.y + to.h);
+  const room: 1 | -1 = top - GRID.y >= 60 || top - GRID.y >= BOARD_H - bottom ? -1 : 1;
+  const s = shift[1] ? (Math.sign(shift[1]) as 1 | -1) : room;
+  // Under a captioned drawing the caption is in the way, so a loop below leaves from the bottom of the whole element.
+  const ey = (art: Rect, r: Rect) => (s < 0 ? art.y - 8 : r.y + r.h + 8);
+  const a: Pt = [fa.x + fa.w / 2, ey(fa, from)];
+  const b: Pt = [ta.x + ta.w / 2, ey(ta, to)];
+  const out = (s < 0 ? Math.min(a[1], b[1]) : Math.max(a[1], b[1])) + s * 96;
+  return { route: quadPoints(a, [(a[0] + b[0]) / 2, out], b), side: s < 0 ? 1 : -1 };
 }
 
 /** A gentle arc between two elements (for things that travel without an arrow). */
@@ -945,6 +1332,16 @@ export function layoutScene(actions: Action[], opts: LayoutOptions = {}): SceneL
     return byLabel ? refs.get(byLabel[1]) ?? null : null;
   };
 
+  // Connectors joining the same two elements (there and back) run side by side, not on top of each other.
+  const pairKey = (x: Ref, y: Ref) => [x.ids.join(","), y.ids.join(",")].sort().join("|");
+  const pairCount = new Map<string, number>();
+  for (const a of acts) {
+    if (!isConnectorKind(a.kind)) continue;
+    const [f, t] = [resolve(a.from), resolve(a.to)];
+    if (f && t && f !== t) pairCount.set(pairKey(f, t), (pairCount.get(pairKey(f, t)) ?? 0) + 1);
+  }
+  const pairSeen = new Map<string, number>();
+
   // Pass 2: connectors and annotations, which need geometry of their targets.
   for (const a of acts) {
     if (isConnectorKind(a.kind)) {
@@ -957,13 +1354,24 @@ export function layoutScene(actions: Action[], opts: LayoutOptions = {}): SceneL
       const c1 = center(from.bbox);
       const c2 = center(to.bbox);
       if (Math.hypot(c2[0] - c1[0], c2[1] - c1[1]) < 30) continue;
-      const p1 = edgePoint(from.bbox, c2, 12);
-      const p2 = edgePoint(to.bbox, c1, 14);
+      const key = pairKey(from, to);
+      const n = pairCount.get(key) ?? 1;
+      const k = pairSeen.get(key) ?? 0;
+      pairSeen.set(key, k + 1);
+      let shift: Pt = [0, 0];
+      if (n > 1) {
+        // Offsets measured across the pair's line in a fixed order, so A→B and B→A land on opposite sides.
+        const [u, v] = from.ids.join(",") <= to.ids.join(",") ? [c1, c2] : [c2, c1];
+        const len = Math.hypot(v[0] - u[0], v[1] - u[1]) || 1;
+        const off = (k - (n - 1) / 2) * 36;
+        shift = [(-(v[1] - u[1]) / len) * off, ((v[0] - u[0]) / len) * off];
+      }
+      const { route, side } = connectorRoute(from, to, shift);
       const isArrow = a.kind === "arrow";
-      const e = arrowElement(a.id, a.id, p1, p2, colorOf(a.color), a.text?.trim() || null, seedFrom(a.id), 0, 1, isArrow, isArrow);
+      const e = arrowElement(a.id, a.id, route, colorOf(a.color), a.text?.trim() || null, seedFrom(a.id), { head: isArrow, flow: isArrow, side });
       e.deps = [...from.ids, ...to.ids];
       elements.push(e);
-      register(e, [p1, p2]);
+      register(e, route);
     } else if (a.kind === "trace") {
       // Along an arrow or a flow, or straight from one element to another.
       const along = resolve(a.target) ?? (a.from && a.to ? null : resolve(a.to ?? a.from));
@@ -983,6 +1391,18 @@ export function layoutScene(actions: Action[], opts: LayoutOptions = {}): SceneL
       }
       const e = buildTrace(a, trail);
       e.deps = deps;
+      elements.push(e);
+    } else if (isMotionKind(a.kind)) {
+      // A demonstration: an existing element starts to move.
+      const target = resolve(a.target ?? a.from);
+      const to = resolve(a.to);
+      const needsTo = a.kind === "orbit" || a.kind === "move";
+      if (!target || (needsTo && (!to || to === target))) {
+        warnings.push(`${a.kind} ${a.id}: unknown ${!target ? `target "${a.target}"` : `"to" element "${a.to}"`}`);
+        continue;
+      }
+      const e = buildMotion(a, target, needsTo ? to : null);
+      e.deps = [...target.ids, ...(needsTo && to ? to.ids : [])];
       elements.push(e);
     } else if (isAnnotationKind(a.kind)) {
       const target = resolve(a.target ?? a.to ?? a.from);
@@ -1011,6 +1431,47 @@ function pathOf(e: BoardElement): Pt[] | undefined {
 function textInfo(e?: BoardElement) {
   const t = e?.parts.find((p) => p.type === "text");
   return t && t.type === "text" ? t : null;
+}
+
+/** A motion: the element itself draws only an orbit's path; the timeline applies the movement to the targets. */
+function buildMotion(a: Action, target: Ref, to: Ref | null): BoardElement {
+  const T = target.bbox;
+  const type = a.kind as MotionKind;
+  const motion: MotionSpec = { type, targets: target.ids };
+  const base = { id: a.id, actionId: a.id, kind: a.kind, label: null, clickable: false };
+  if (type === "orbit" && to) {
+    // A dotted orbit path through the target's current position, then it starts to travel.
+    const C = center(to.bbox);
+    const P = center(T);
+    const ky = Math.abs(P[1] - C[1]) > Math.abs(P[0] - C[0]) * 1.5 ? 0.85 : 0.55;
+    const R0 = Math.max(40, Math.hypot(P[0] - C[0], (P[1] - C[1]) / ky));
+    // The ring stays on the board, below the title (what rides on it may peek past the edge for a
+    // moment); if it has to shrink, the element glides onto it as it starts to travel. It may pass in
+    // front of the thing in the middle, but never sits on it.
+    const fit = Math.min(C[0] - 10, BOARD_W - 10 - C[0], (C[1] - (GRID.y - 24)) / ky, (BOARD_H - 10 - C[1]) / ky);
+    const near = (Math.max(to.bbox.w, to.bbox.h) + Math.max(T.w, T.h)) * 0.3;
+    const R = R0 > fit ? Math.min(R0, Math.max(fit, near, 40)) : R0;
+    const pts = ellipsePoints(C[0], C[1], R, R * ky, 72);
+    let d = "";
+    for (let i = 0; i + 1 < pts.length; i += 2) d += `M${pts[i][0].toFixed(1)} ${pts[i][1].toFixed(1)} L${pts[i + 1][0].toFixed(1)} ${pts[i + 1][1].toFixed(1)} `;
+    motion.center = C;
+    motion.ky = ky;
+    if (Math.abs(R - R0) > 2) motion.radius = Math.round(R);
+    const ringColor = a.color ? colorOf(a.color) : INK.ink;
+    return el({
+      ...base,
+      bbox: onBoard(union([{ x: C[0] - R, y: C[1] - R * ky, w: R * 2, h: R * 2 * ky }, T])),
+      parts: [{ type: "stroke", d: d.trim(), color: ringColor, width: 2.5, opacity: 0.55, a: 0, b: 1, trail: pts }],
+      natural: 1.1,
+      motion,
+    });
+  }
+  if (type === "move" && to) motion.toBox = to.bbox;
+  if (type === "grow") {
+    const f = Number(String(a.expr ?? "").match(/\d+(?:\.\d+)?/)?.[0]);
+    motion.factor = Number.isFinite(f) && f > 0 ? clamp(f, 0.3, 2.5) : 1.6;
+  }
+  return el({ ...base, bbox: to && type === "move" ? union([T, to.bbox]) : T, parts: [], natural: 0.3, motion });
 }
 
 /** Annotations that make their target give a little bump as they start. */
@@ -1145,7 +1606,7 @@ function buildAnnotation(a: Action, target: Ref, occ: Occupancy, warnings: strin
       const tb = t.bbox;
       const from = edgePoint(tb, [tcx, tcy], 8);
       const to = edgePoint(T, center(tb), 10);
-      const arrow = arrowElement(`${a.id}.arrow`, a.id, from, to, color, null, seed);
+      const arrow = arrowElement(`${a.id}.arrow`, a.id, [from, to], color, null, seed);
       return el({ ...base, label: text, clickable: true, bbox: union([tb, arrow.bbox]), parts: [{ ...t.part, a: 0, b: 0.6 }, ...arrow.parts.map((p) => ({ ...p, a: 0.55 + p.a * 0.45, b: 0.55 + p.b * 0.45 }))], natural: textDur(text) + 0.5 });
     }
     default:

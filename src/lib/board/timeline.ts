@@ -2,6 +2,7 @@ import type { Scene, SceneKind } from "@/lib/lesson/schema";
 import { FULL_VIEW, planCamera, unite, type CameraKey } from "./camera";
 import { CUE_LEAD, SCENE_GAP, SEGMENT_GAP, WORDS_PER_SECOND } from "./constants";
 import { layoutScene, type BoardElement, type Rect, type SceneLayout } from "./layout";
+import type { TimedMotion } from "./motion";
 
 /**
  * Compiles scenes + measured audio durations into an absolute timeline.
@@ -15,6 +16,8 @@ export interface TimedElement extends BoardElement {
   sceneId: string;
   /** Times when an annotation points at this element (it gives a little bump). */
   emphasis?: number[];
+  /** Demonstrations applied to this element (orbit, spin, swing, move, vibrate, grow). */
+  motions?: TimedMotion[];
 }
 
 export interface Word {
@@ -283,6 +286,17 @@ export function compileTimeline(
       }
     }
     timed.sort((p, q) => p.start - q.start);
+
+    // Motions: the targets start moving once the motion's own drawing (an orbit's path) is done.
+    for (const e of timed) {
+      if (!e.motion) continue;
+      for (const id of e.motion.targets) {
+        const target = byId.get(id);
+        if (!target) continue;
+        target.motions = [...(target.motions ?? []), { ...e.motion, start: e.start + e.dur }];
+        target.ambient = true;
+      }
+    }
 
     // Annotations that point at something make it bump as they start.
     for (const e of timed) {

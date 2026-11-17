@@ -25,6 +25,11 @@ export const ELEMENT_KINDS = [
   "plot",
   "bars",
   "number",
+  "sketch",
+  "particles",
+  "timeline",
+  "pie",
+  "compare",
 ] as const;
 
 /** Things that connect two elements. */
@@ -42,15 +47,20 @@ export const ANNOTATION_KINDS = [
   "pulse",
 ] as const;
 
+/** Things that make an existing element move (demonstrations). */
+export const MOTION_KINDS = ["orbit", "spin", "swing", "move", "vibrate", "grow"] as const;
+
 export const ACTION_KINDS = [
   ...ELEMENT_KINDS,
   ...CONNECTOR_KINDS,
   ...ANNOTATION_KINDS,
+  ...MOTION_KINDS,
 ] as const;
 export type ActionKind = (typeof ACTION_KINDS)[number];
 export type ElementKind = (typeof ELEMENT_KINDS)[number];
 export type ConnectorKind = (typeof CONNECTOR_KINDS)[number];
 export type AnnotationKind = (typeof ANNOTATION_KINDS)[number];
+export type MotionKind = (typeof MOTION_KINDS)[number];
 
 export const isElementKind = (k: string): k is ElementKind =>
   (ELEMENT_KINDS as readonly string[]).includes(k);
@@ -58,6 +68,8 @@ export const isConnectorKind = (k: string): k is ConnectorKind =>
   (CONNECTOR_KINDS as readonly string[]).includes(k);
 export const isAnnotationKind = (k: string): k is AnnotationKind =>
   (ANNOTATION_KINDS as readonly string[]).includes(k);
+export const isMotionKind = (k: string): k is MotionKind =>
+  (MOTION_KINDS as readonly string[]).includes(k);
 
 export const LEVELS = ["beginner", "intermediate", "advanced"] as const;
 export type Level = (typeof LEVELS)[number];
