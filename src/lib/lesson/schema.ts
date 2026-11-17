@@ -23,6 +23,8 @@ export const ELEMENT_KINDS = [
   "flow",
   "cycle",
   "plot",
+  "bars",
+  "number",
 ] as const;
 
 /** Things that connect two elements. */
@@ -37,6 +39,7 @@ export const ANNOTATION_KINDS = [
   "check",
   "callout",
   "trace",
+  "pulse",
 ] as const;
 
 export const ACTION_KINDS = [

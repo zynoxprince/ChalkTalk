@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { FIXTURE_SCENES } from "@/lib/lesson/fixture";
-import { layoutScene, Occupancy, placeCell, cellRect } from "@/lib/board/layout";
+import { layoutScene, Occupancy, parseBars, placeCell, cellRect } from "@/lib/board/layout";
+import { cameraAt, frame, FULL_VIEW, MAX_ZOOM, planCamera } from "@/lib/board/camera";
+import { countsUp, formatNumber, parseNumber } from "@/lib/board/anim";
+import type { Action } from "@/lib/lesson/schema";
 import { compileTimeline, findCue, fractionAt, type AudioInfo } from "@/lib/board/timeline";
 import { frameAt, pointAlong } from "@/lib/board/state";
 import { fitText, wrap } from "@/lib/board/text";
@@ -200,5 +203,120 @@ describe("icons", () => {
     expect(resolveIcon("trees")).toBe("tree-deciduous");
     expect(resolveIcon("flask_icon")).toBe("flask-conical");
     expect(resolveIcon("definitely-not-an-icon-xyz")).toBeNull();
+  });
+});
+
+describe("camera", () => {
+  const tl = compileTimeline(FIXTURE_SCENES.map((scene) => ({ scene })), allReady(6), { complete: true });
+
+  it("always shows a board-shaped part of the board, never beyond its edges", () => {
+    for (let t = 0; t < tl.duration; t += 0.37) {
+      const v = frameAt(tl, t).view;
+      expect(v.x).toBeGreaterThanOrEqual(-0.01);
+      expect(v.y).toBeGreaterThanOrEqual(-0.01);
+      expect(v.x + v.w).toBeLessThanOrEqual(BOARD_W + 0.01);
+      expect(v.y + v.h).toBeLessThanOrEqual(BOARD_H + 0.01);
+      expect(v.w / v.h).toBeCloseTo(BOARD_W / BOARD_H, 3);
+      expect(BOARD_W / v.w).toBeLessThanOrEqual(MAX_ZOOM + 1e-6);
+    }
+  });
+
+  it("starts each board in full view, moves in while drawing, and shows the whole board before erasing", () => {
+    for (const scene of tl.scenes) {
+      expect(cameraAt(scene.camera, scene.start + 0.05)).toEqual(FULL_VIEW);
+      expect(cameraAt(scene.camera, scene.end - 0.02)).toEqual(FULL_VIEW);
+    }
+    const zoomed = tl.scenes.some((s) => s.camera.some((k) => k.to.w < BOARD_W));
+    expect(zoomed).toBe(true);
+  });
+
+  it("is a pure function of time (seeking lands on the same view)", () => {
+    const t = tl.duration * 0.37;
+    const a = frameAt(tl, t).view;
+    frameAt(tl, tl.duration * 0.8);
+    expect(frameAt(tl, t).view).toEqual(a);
+  });
+
+  it("frames focus areas with room around them", () => {
+    const v = frame({ x: 700, y: 400, w: 100, h: 60 });
+    expect(v.w).toBeCloseTo(BOARD_W / MAX_ZOOM);
+    expect(v.x).toBeLessThan(700);
+    expect(v.x + v.w).toBeGreaterThan(800);
+  });
+
+  it("holds still while new drawing already fits in view", () => {
+    const els = [
+      { start: 1, dur: 1, kind: "box", bbox: { x: 600, y: 400, w: 120, h: 80 } },
+      { start: 4, dur: 1, kind: "box", bbox: { x: 700, y: 420, w: 120, h: 80 } },
+    ];
+    const keys = planCamera(els, 0, 8);
+    // full → zoom in once → back to full before the end: no extra move for the second box.
+    expect(keys.length).toBe(3);
+  });
+});
+
+describe("animation details", () => {
+  it("parses and formats numbers that count up", () => {
+    const n = parseNumber("$1,234.50 saved")!;
+    expect(n).toMatchObject({ prefix: "$", value: 1234.5, decimals: 2, grouped: true, suffix: " saved" });
+    expect(formatNumber(n, 617.25)).toBe("$617.25 saved");
+    expect(countsUp("70%", parseNumber("70%"))).toBe(true);
+    expect(countsUp("1914", parseNumber("1914"))).toBe(false);
+  });
+
+  it("reads bar chart items", () => {
+    expect(parseBars(["Year 1: $110", "Year 2 = $121", "Mars 38%"])).toEqual([
+      { label: "Year 1", value: 110, display: "$110" },
+      { label: "Year 2", value: 121, display: "$121" },
+      { label: "Mars", value: 38, display: "38%" },
+    ]);
+    expect(parseBars(["Cats", "Dogs"])).toEqual([]);
+  });
+
+  it("builds a bar chart with an axis and one bar per item, addressable by index", () => {
+    const { elements, warnings } = layoutScene([
+      { id: "chart", kind: "bars", cue: "x", text: null, items: ["A: 1", "B: 4", "C: 2"], icon: null, at: { col: 2, row: 1, w: 6, h: 4 }, from: null, to: null, target: null, color: "blue", expr: null },
+      { id: "p", kind: "pulse", cue: "x", text: null, items: null, icon: null, at: null, from: null, to: null, target: "chart[1]", color: null, expr: null },
+    ]);
+    expect(warnings).toEqual([]);
+    expect(elements.map((e) => e.id)).toEqual(["chart.axis", "chart.0", "chart.1", "chart.2", "p"]);
+    const [b0, b1] = [elements[1], elements[2]];
+    expect(b1.bbox.h).toBeGreaterThan(b0.bbox.h);
+    expect(elements[4].targets).toEqual(["chart.1"]);
+  });
+
+  it("sends a token between two elements and waits until both are drawn", () => {
+    const actions = [
+      { id: "a", kind: "box", cue: "first", text: "A", items: null, icon: null, at: { col: 0, row: 0, w: 3, h: 1 }, from: null, to: null, target: null, color: null, expr: null },
+      { id: "t", kind: "trace", cue: "first", text: null, items: null, icon: "zap", at: null, from: "a", to: "b", target: null, color: null, expr: null },
+      { id: "b", kind: "box", cue: "then", text: "B", items: null, icon: null, at: { col: 8, row: 4, w: 3, h: 1 }, from: null, to: null, target: null, color: null, expr: null },
+    ] satisfies Action[];
+    const scene = { id: "s", kind: "chapter" as const, title: "T", segments: [{ id: "s-0", sig: "", narration: "First comes A, and then comes B.", actions }] };
+    const tl = compileTimeline([{ scene }], new Map([["s-0", { duration: 6, ok: true }]]), { complete: true });
+    const els = tl.scenes[0].elements;
+    const token = els.find((e) => e.id === "t")!;
+    const b = els.find((e) => e.id === "b")!;
+    expect(token.transient).toBe(true);
+    expect(token.start).toBeGreaterThanOrEqual(b.start + b.dur * 0.6 - 1e-9);
+    const part = token.parts[0];
+    expect(part.type === "dot" && part.token?.icon).toBeTruthy();
+  });
+
+  it("bumps the element an annotation points at, briefly", () => {
+    const tl = compileTimeline(FIXTURE_SCENES.map((scene) => ({ scene })), allReady(6), { complete: true });
+    const sugar = tl.scenes[1].elements.find((e) => e.id === "sugar")!;
+    expect(sugar.emphasis?.length).toBe(1);
+    const at = sugar.emphasis![0];
+    expect(frameAt(tl, at + 0.2).items.find((i) => i.el.id === "sugar")!.bump).toBeGreaterThan(0);
+    expect(frameAt(tl, at + 1).items.find((i) => i.el.id === "sugar")!.bump).toBe(0);
+  });
+
+  it("keeps arrows flowing after they're drawn", () => {
+    const tl = compileTimeline(FIXTURE_SCENES.map((scene) => ({ scene })), allReady(6), { complete: true });
+    const arrow = tl.scenes[1].elements.find((e) => e.id === "a1")!;
+    expect(arrow.ambient).toBe(true);
+    expect(arrow.parts.some((p) => p.type === "flow")).toBe(true);
+    const later = frameAt(tl, arrow.start + arrow.dur + 2).items.find((i) => i.el.id === "a1")!;
+    expect(later.age).toBeCloseTo(2);
   });
 });

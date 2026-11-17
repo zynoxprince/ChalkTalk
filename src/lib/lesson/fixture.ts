@@ -50,6 +50,7 @@ export const FIXTURE_SCENES: Scene[] = [
           A({ id: "a1", kind: "arrow", from: "sun", to: "leaf", cue: "light from the sun" }),
           A({ id: "water", kind: "icon", icon: "droplet", text: "Water", color: "blue", at: { col: 1, row: 4, w: 2, h: 2 }, cue: "water from the roots" }),
           A({ id: "a2", kind: "arrow", from: "water", to: "leaf", cue: "water from the roots" }),
+          A({ id: "drop", kind: "trace", target: "a2", icon: "droplet", color: "blue", cue: "from the roots" }),
           A({ id: "co2", kind: "box", text: "CO₂", at: { col: 9, row: 0, w: 2, h: 1 }, cue: "carbon dioxide" }),
           A({ id: "a3", kind: "arrow", from: "co2", to: "leaf", cue: "carbon dioxide" }),
         ],
@@ -64,6 +65,7 @@ export const FIXTURE_SCENES: Scene[] = [
           A({ id: "o2", kind: "box", text: "O₂", color: "green", at: { col: 9, row: 5, w: 2, h: 1 }, cue: "oxygen" }),
           A({ id: "a5", kind: "arrow", from: "leaf", to: "o2", cue: "oxygen" }),
           A({ id: "h1", kind: "highlight", target: "o2", cue: "for us to breathe" }),
+          A({ id: "p1", kind: "pulse", target: "sugar", cue: "the plant's food" }),
         ],
       },
     ],
@@ -101,6 +103,32 @@ export const FIXTURE_SCENES: Scene[] = [
         actions: [
           A({ id: "curve", kind: "plot", expr: "1 - exp(-x); 0..5", text: "rate vs light", color: "purple", at: { col: 7, row: 4, w: 5, h: 2 }, cue: "Light intensity" }),
           A({ id: "c1n", kind: "callout", text: "levels off", target: "curve", cue: "levels off" }),
+        ],
+      },
+    ],
+  },
+  {
+    id: "c3",
+    kind: "chapter",
+    title: "Light makes the difference",
+    segments: [
+      {
+        id: "c3-0",
+        sig: "",
+        narration: "A leaf captures only about one percent of the sunlight that reaches it, yet that is enough to power almost all life on Earth.",
+        actions: [
+          A({ id: "share", kind: "number", text: "1%", items: ["of sunlight captured"], color: "orange", at: { col: 0, row: 0, w: 4, h: 2 }, cue: "about one percent" }),
+          A({ id: "earth", kind: "icon", icon: "earth", text: "All life", color: "green", at: { col: 0, row: 3, w: 4, h: 3 }, cue: "enough to power" }),
+          A({ id: "power", kind: "trace", from: "share", to: "earth", icon: "zap", color: "orange", cue: "all life on Earth" }),
+        ],
+      },
+      {
+        id: "c3-1",
+        sig: "",
+        narration: "Grow three seedlings in shade, by a window and in full sun, and the one in full sun grows fastest.",
+        actions: [
+          A({ id: "growth", kind: "bars", items: ["Shade: 2 cm", "Window: 5 cm", "Full sun: 9 cm"], color: "green", at: { col: 5, row: 0, w: 7, h: 5 }, cue: "three seedlings" }),
+          A({ id: "best", kind: "pulse", target: "growth[2]", cue: "grows fastest" }),
         ],
       },
     ],

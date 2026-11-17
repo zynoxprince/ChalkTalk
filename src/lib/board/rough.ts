@@ -11,8 +11,8 @@ const gen = rough.generator();
 
 export interface RoughPath {
   d: string;
-  /** Path is a fill area rather than an outline stroke. */
-  fill: boolean;
+  /** outline = the pen stroke; solid = a filled area; hatch = hand-hatched fill strokes. */
+  kind: "outline" | "solid" | "hatch";
 }
 
 export function seedFrom(id: string): number {
@@ -25,9 +25,10 @@ export function seedFrom(id: string): number {
 }
 
 function toPaths(drawable: ReturnType<typeof gen.line>): RoughPath[] {
-  return gen.toPaths(drawable).map((p) => ({
-    d: p.d,
-    fill: p.fill !== undefined && p.fill !== "none" && (p.stroke === "none" || !p.stroke),
+  return drawable.sets.map((set) => ({
+    // One decimal is plenty at board scale and keeps the DOM light.
+    d: gen.opsToPath(set, 1),
+    kind: set.type === "fillSketch" ? "hatch" : set.type === "fillPath" ? "solid" : "outline",
   }));
 }
 
@@ -40,6 +41,9 @@ const base = (seed: number, extra: Options = {}): Options => ({
   preserveVertices: true,
   ...extra,
 });
+
+/** Options for a light hand-hatched fill in `color`. */
+export const hatchFill = (color: string, gap = 12): Options => ({ fill: color, fillStyle: "hachure", hachureGap: gap, fillWeight: 2.2, hachureAngle: -41 });
 
 export const roughRect = (x: number, y: number, w: number, h: number, seed: number, extra?: Options) =>
   toPaths(gen.rectangle(x, y, w, h, base(seed, extra)));

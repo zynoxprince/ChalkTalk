@@ -7,19 +7,24 @@ import {
   type Color,
 } from "@/lib/lesson/schema";
 import {
+  BOARD_BG,
   CELL_H,
   CELL_W,
   GRID,
+  HATCH,
   INK,
   MARKER_YELLOW,
   NOTE_FILL,
   NOTE_STROKE,
   TITLE,
+  BOARD_H,
   BOARD_W,
+  WASH,
 } from "./constants";
+import { countsUp, parseNumber, type NumberParts } from "./anim";
 import { iconNodes, resolveIcon, type IconNode } from "./icons";
 import { parsePlot } from "./expr";
-import { roughCurve, roughEllipse, roughLine, roughLinear, roughRect, seedFrom } from "./rough";
+import { hatchFill, roughCurve, roughEllipse, roughLine, roughLinear, roughRect, seedFrom, type RoughPath } from "./rough";
 import { fitText, textWidth } from "./text";
 
 export interface Rect {
@@ -44,7 +49,16 @@ export type Part =
       /** Approximate pen path, used to place the pen cursor while drawing. */
       trail?: Pt[];
     }
-  | { type: "fill"; d: string; color: string; a: number; b: number; opacity?: number }
+  | {
+      type: "fill";
+      d: string;
+      color: string;
+      a: number;
+      b: number;
+      opacity?: number;
+      /** Pops in (scales up from this point) instead of fading in. */
+      origin?: Pt;
+    }
   | {
       type: "text";
       x: number;
@@ -59,9 +73,53 @@ export type Part =
       widths: number[];
       a: number;
       b: number;
+      /** Outline in this colour behind the letters, so text stays crisp over hatching. */
+      halo?: string;
     }
   | { type: "icon"; nodes: IconNode; x: number; y: number; size: number; color: string; a: number; b: number }
-  | { type: "dot"; trail: Pt[]; color: string; r: number; a: number; b: number };
+  | {
+      type: "dot";
+      trail: Pt[];
+      color: string;
+      r: number;
+      a: number;
+      b: number;
+      /** Something that travels instead of a plain dot: a small icon or a word. */
+      token?: { icon: IconNode | null; label: string | null; wash: string };
+    }
+  /** Beads that keep flowing along a finished arrow, showing its direction. */
+  | { type: "flow"; d: string; color: string; a: number; b: number }
+  /** Rings that spread out and fade, to draw the eye. */
+  | { type: "ripple"; cx: number; cy: number; rx: number; ry: number; color: string; a: number; b: number }
+  /** A bar that grows up from `base` with its value counting up on top. */
+  | {
+      type: "bar";
+      x: number;
+      w: number;
+      h: number;
+      base: number;
+      outline: string;
+      hatch: string;
+      color: string;
+      tint: string;
+      value: { text: string; num: NumberParts | null; size: number };
+      a: number;
+      b: number;
+    }
+  /** A number that counts up from zero as it's written. */
+  | {
+      type: "count";
+      x: number;
+      y: number;
+      size: number;
+      color: string;
+      anchor: "start" | "middle";
+      weight: number;
+      text: string;
+      num: NumberParts | null;
+      a: number;
+      b: number;
+    };
 
 export interface BoardElement {
   id: string;
@@ -79,6 +137,14 @@ export interface BoardElement {
   clickable: boolean;
   /** Disappears once finished (e.g. a tracing dot). */
   transient: boolean;
+  /** Scales in with a little bounce as it appears. */
+  pop?: boolean;
+  /** Keeps moving after it's drawn (flowing arrows), so it needs the clock. */
+  ambient?: boolean;
+  /** Elements this annotation points at: they get a small bump when it starts. */
+  targets?: string[];
+  /** Elements that must already be on the board before this one starts (what an arrow joins, what a note points at). */
+  deps?: string[];
 }
 
 export interface SceneLayout {
@@ -90,6 +156,8 @@ interface Ref {
   bbox: Rect;
   el?: BoardElement;
   path?: Pt[];
+  /** The element ids this reference stands for (several for a whole flow or list). */
+  ids: string[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -102,6 +170,12 @@ const textDur = (s: string) => clamp(0.032 * s.length + 0.3, 0.45, 2.0);
 const colorOf = (c: Color | null | undefined, fallback: Color = "ink") => INK[c ?? fallback] ?? INK.ink;
 const inset = (r: Rect, d: number): Rect => ({ x: r.x + d, y: r.y + d, w: Math.max(4, r.w - 2 * d), h: Math.max(4, r.h - 2 * d) });
 const center = (r: Rect): Pt => [r.x + r.w / 2, r.y + r.h / 2];
+/** Keeps a box on the board (effects like ripples may spill past the edge visually). */
+const onBoard = (r: Rect): Rect => {
+  const x = clamp(r.x, 0, BOARD_W);
+  const y = clamp(r.y, 0, BOARD_H);
+  return { x, y, w: clamp(r.x + r.w, 0, BOARD_W) - x, h: clamp(r.y + r.h, 0, BOARD_H) - y };
+};
 const union = (rs: Rect[]): Rect => {
   const x1 = Math.min(...rs.map((r) => r.x));
   const y1 = Math.min(...rs.map((r) => r.y));
@@ -143,16 +217,40 @@ function edgePoint(r: Rect, toward: Pt, pad = 0): Pt {
   return [cx + dx * t, cy + dy * t];
 }
 
-function strokeParts(paths: { d: string; fill: boolean }[], color: string, width: number, a: number, b: number, trail?: Pt[], fill?: { color: string; a: number; b: number }): Part[] {
+interface FillOpts {
+  color: string;
+  a: number;
+  b: number;
+  opacity?: number;
+  origin?: Pt;
+}
+
+/**
+ * Turns rough.js paths into timed parts: the outline is drawn during [a, b];
+ * a solid fill and hand-hatching (if the shape has them) get their own windows.
+ * Fills come first in the list so they sit underneath the outline.
+ */
+function strokeParts(paths: RoughPath[], color: string, width: number, a: number, b: number, trail?: Pt[], fill?: FillOpts, hatch?: FillOpts): Part[] {
   const parts: Part[] = [];
   for (const p of paths) {
-    if (p.fill) {
-      if (fill) parts.push({ type: "fill", d: p.d, color: fill.color, a: fill.a, b: fill.b });
+    if (p.kind === "solid") {
+      if (fill) parts.push({ type: "fill", d: p.d, color: fill.color, a: fill.a, b: fill.b, opacity: fill.opacity, origin: fill.origin });
+    } else if (p.kind === "hatch") {
+      if (hatch) parts.push({ type: "stroke", d: p.d, color: hatch.color, width: 2.2, a: hatch.a, b: hatch.b, opacity: hatch.opacity });
     } else {
       parts.push({ type: "stroke", d: p.d, color, width, a, b, trail });
     }
   }
   return parts;
+}
+
+const tintOf = (c: Color | null | undefined, fallback: Color = "ink") => HATCH[c ?? fallback] ?? HATCH.ink;
+const washOf = (c: Color | null | undefined, fallback: Color = "ink") => WASH[c ?? fallback] ?? WASH.ink;
+
+/** A soft colour spot behind an icon or number that pops in first. */
+function blobPart(cx: number, cy: number, w: number, h: number, color: string, seed: number, a = 0, b = 0.2): Part {
+  const d = roughEllipse(cx, cy, w, h, seed, { fill: color, fillStyle: "solid", stroke: "none", roughness: 1.4 })[0]?.d ?? "";
+  return { type: "fill", d, color, a, b, origin: [cx, cy] };
 }
 
 function arrowHead(tip: Pt, from: Pt, size: number): [Pt, Pt] {
@@ -262,7 +360,7 @@ function textPart(
   text: string,
   box: Rect,
   color: string,
-  opts: { max?: number; min?: number; maxLines?: number; anchor?: "start" | "middle"; weight?: number; a?: number; b?: number } = {},
+  opts: { max?: number; min?: number; maxLines?: number; anchor?: "start" | "middle"; weight?: number; a?: number; b?: number; halo?: string } = {},
 ): { part: Extract<Part, { type: "text" }>; bbox: Rect } {
   const fit = fitText(text, box.w, box.h, { max: opts.max, min: opts.min, maxLines: opts.maxLines });
   const anchor = opts.anchor ?? "start";
@@ -285,6 +383,7 @@ function textPart(
       widths,
       a: opts.a ?? 0,
       b: opts.b ?? 1,
+      halo: opts.halo,
     },
     bbox: { x: bx, y: top, w: fit.width, h: blockH },
   };
@@ -324,7 +423,9 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
       return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text, bbox, parts: [part], natural: textDur(text) })];
     }
     case "note": {
+      // A sticky note slaps onto the board (with a soft shadow), then gets written on.
       const r = inset(rect, 10);
+      const shadow = roughRect(r.x + 7, r.y + 9, r.w, r.h, seed + 9, { fill: "#000000", fillStyle: "solid", stroke: "none" });
       const paths = roughRect(r.x, r.y, r.w, r.h, seed, { fill: NOTE_FILL, fillStyle: "solid", stroke: NOTE_STROKE, strokeWidth: 2.5 });
       const { part } = textPart(text || "…", inset(r, 18), color, { max: 48, min: 20, maxLines: 5, anchor: "middle" });
       return [
@@ -334,25 +435,33 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
           kind: a.kind,
           label: text,
           bbox: r,
-          parts: [...strokeParts(paths, NOTE_STROKE, 2.5, 0, 0.35, rectPerimeter(r), { color: NOTE_FILL, a: 0, b: 0.3 }), { ...part, a: 0.3, b: 1 }],
-          natural: 0.6 + textDur(text),
+          parts: [
+            ...strokeParts(shadow, NOTE_STROKE, 0, 0, 0, undefined, { color: "#000000", a: 0, b: 0.02, opacity: 0.07 }),
+            ...strokeParts(paths, NOTE_STROKE, 2.5, 0.02, 0.28, rectPerimeter(r), { color: NOTE_FILL, a: 0, b: 0.02 }),
+            { ...part, a: 0.28, b: 1 },
+          ],
+          natural: 0.55 + textDur(text),
+          pop: true,
         }),
       ];
     }
     case "box":
     case "circle": {
+      // Outline first, then coloured in with hand hatching, then labelled.
       const r = inset(rect, 12);
       const isBox = a.kind === "box";
+      const tint = tintOf(a.color);
       const paths = isBox
-        ? roughRect(r.x, r.y, r.w, r.h, seed, { stroke: color })
-        : roughEllipse(r.x + r.w / 2, r.y + r.h / 2, r.w, r.h, seed, { stroke: color });
+        ? roughRect(r.x, r.y, r.w, r.h, seed, { stroke: color, ...hatchFill(tint) })
+        : roughEllipse(r.x + r.w / 2, r.y + r.h / 2, r.w, r.h, seed, { stroke: color, ...hatchFill(tint) });
       const trail = isBox ? rectPerimeter(r) : ellipsePoints(r.x + r.w / 2, r.y + r.h / 2, r.w / 2, r.h / 2);
       const inner = isBox ? inset(r, 14) : { x: r.x + r.w * 0.15, y: r.y + r.h * 0.2, w: r.w * 0.7, h: r.h * 0.6 };
-      const parts: Part[] = strokeParts(paths, color, 3, 0, 0.55, trail);
-      if (text) parts.push({ ...textPart(text, inner, INK.ink, { max: 54, min: 18, maxLines: 3, anchor: "middle" }).part, a: 0.45, b: 1 });
-      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text || null, bbox: r, parts, natural: 0.75 + (text ? textDur(text) * 0.7 : 0) })];
+      const parts: Part[] = strokeParts(paths, color, 3, 0, 0.42, trail, undefined, { color: tint, a: 0.36, b: 0.62, opacity: 0.85 });
+      if (text) parts.push({ ...textPart(text, inner, INK.ink, { max: 54, min: 18, maxLines: 3, anchor: "middle", halo: BOARD_BG }).part, a: 0.55, b: 1 });
+      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text || null, bbox: r, parts, natural: 0.95 + (text ? textDur(text) * 0.7 : 0) })];
     }
     case "icon": {
+      // A pale colour spot pops in, the line drawing is sketched over it, then the caption.
       const r = inset(rect, 8);
       const name = resolveIcon(a.icon) ?? resolveIcon(text);
       const nodes = name ? iconNodes(name) : null;
@@ -364,9 +473,12 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
       const size = Math.max(32, Math.min(r.w, r.h - capH) * 0.86);
       const ix = r.x + (r.w - size) / 2;
       const iy = r.y + (r.h - capH - size) / 2;
-      const parts: Part[] = [{ type: "icon", nodes, x: ix, y: iy, size, color, a: 0, b: text ? 0.72 : 1 }];
+      const parts: Part[] = [
+        blobPart(ix + size * 0.53, iy + size * 0.54, size * 1.08, size * 1.0, washOf(a.color), seed + 3, 0, 0.2),
+        { type: "icon", nodes, x: ix, y: iy, size, color, a: 0.08, b: text ? 0.72 : 1 },
+      ];
       if (text) parts.push({ ...textPart(text, { x: r.x - 10, y: r.y + r.h - capH, w: r.w + 20, h: capH }, INK.ink, { max: 46, min: 18, maxLines: 2, anchor: "middle" }).part, a: 0.62, b: 1 });
-      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text || name, bbox: r, parts, natural: 1.1 + (text ? textDur(text) * 0.5 : 0) })];
+      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text || name, bbox: r, parts, natural: 1.15 + (text ? textDur(text) * 0.5 : 0) })];
     }
     case "list": {
       const items = (a.items ?? []).map((s) => s.trim()).filter(Boolean).slice(0, 6);
@@ -387,12 +499,22 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
         const f = wrapped[k];
         const h = f.lines.length * size * 1.12;
         const by = y + size * 0.45;
-        const bullet = roughEllipse(r.x + 10, by, 11, 11, seed + k, { stroke: color, strokeWidth: 3 });
+        const bullet = roughEllipse(r.x + 10, by, 13, 13, seed + k, { stroke: color, strokeWidth: 3, fill: color, fillStyle: "solid" });
         const tx = r.x + indent;
         const part: Part = { type: "text", x: tx, y: y + size * 0.8, lines: f.lines, size, lineHeight: 1.12, color: INK.ink, anchor: "start", weight: 600, widths: f.lines.map((l) => textWidth(l, size)), a: 0.15, b: 1 };
         const bbox = { x: tx, y, w: f.width, h };
         y += h + size * 0.35;
-        return el({ id: `${a.id}.${k}`, actionId: a.id, kind: "list-item", label: it, bbox, parts: [...strokeParts(bullet, color, 3, 0, 0.15), part], natural: textDur(it) + 0.15, seq: k, seqCount: items.length });
+        return el({
+          id: `${a.id}.${k}`,
+          actionId: a.id,
+          kind: "list-item",
+          label: it,
+          bbox,
+          parts: [...strokeParts(bullet, color, 3, 0, 0.12, undefined, { color, a: 0, b: 0.15, origin: [r.x + 10, by] }), part],
+          natural: textDur(it) + 0.15,
+          seq: k,
+          seqCount: items.length,
+        });
       });
     }
     case "flow": {
@@ -410,16 +532,29 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
           : { x: r.x + (r.w - nodeW) / 2, y: r.y + k * (nodeH + gap), w: nodeW, h: nodeH },
       );
       const out: BoardElement[] = [];
+      const tint = tintOf(a.color);
       items.forEach((it, k) => {
         const nr = nodes[k];
-        const paths = roughRect(nr.x, nr.y, nr.w, nr.h, seed + k * 7, { stroke: color });
-        const { part } = textPart(it, inset(nr, 12), INK.ink, { max: 48, min: 16, maxLines: 3, anchor: "middle" });
-        out.push(el({ id: `${a.id}.${k}`, actionId: a.id, kind: "flow-node", label: it, bbox: nr, parts: [...strokeParts(paths, color, 3, 0, 0.5, rectPerimeter(nr)), { ...part, a: 0.4, b: 1 }], natural: 0.55 + textDur(it) * 0.6, seq: k * 2, seqCount: n * 2 - 1 }));
+        const paths = roughRect(nr.x, nr.y, nr.w, nr.h, seed + k * 7, { stroke: color, ...hatchFill(tint) });
+        const { part } = textPart(it, inset(nr, 12), INK.ink, { max: 48, min: 16, maxLines: 3, anchor: "middle", halo: BOARD_BG });
+        out.push(
+          el({
+            id: `${a.id}.${k}`,
+            actionId: a.id,
+            kind: "flow-node",
+            label: it,
+            bbox: nr,
+            parts: [...strokeParts(paths, color, 3, 0, 0.42, rectPerimeter(nr), undefined, { color: tint, a: 0.36, b: 0.6, opacity: 0.85 }), { ...part, a: 0.5, b: 1 }],
+            natural: 0.7 + textDur(it) * 0.6,
+            seq: k * 2,
+            seqCount: n * 2 - 1,
+          }),
+        );
         if (k < n - 1) {
           const nx = nodes[k + 1];
           const p1: Pt = horizontal ? [nr.x + nr.w + 8, nr.y + nr.h / 2] : [nr.x + nr.w / 2, nr.y + nr.h + 6];
           const p2: Pt = horizontal ? [nx.x - 10, nx.y + nx.h / 2] : [nx.x + nx.w / 2, nx.y - 8];
-          out.push(arrowElement(`${a.id}.a${k}`, a.id, p1, p2, color, null, seed + k * 13, k * 2 + 1, n * 2 - 1));
+          out.push(arrowElement(`${a.id}.a${k}`, a.id, p1, p2, color, null, seed + k * 13, k * 2 + 1, n * 2 - 1, true, true));
         }
       });
       return out;
@@ -437,11 +572,27 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
       const angle = (k: number) => -Math.PI / 2 + (k / n) * Math.PI * 2;
       const nodes: Rect[] = items.map((_, k) => ({ x: cx + rx * Math.cos(angle(k)) - nodeW / 2, y: cy + ry * Math.sin(angle(k)) - nodeH / 2, w: nodeW, h: nodeH }));
       const out: BoardElement[] = [];
+      const tint = tintOf(a.color);
       items.forEach((it, k) => {
         const nr = nodes[k];
-        const paths = roughEllipse(nr.x + nr.w / 2, nr.y + nr.h / 2, nr.w, nr.h, seed + k * 5, { stroke: color });
-        const { part } = textPart(it, { x: nr.x + nr.w * 0.12, y: nr.y + nr.h * 0.16, w: nr.w * 0.76, h: nr.h * 0.68 }, INK.ink, { max: 40, min: 15, maxLines: 2, anchor: "middle" });
-        out.push(el({ id: `${a.id}.${k}`, actionId: a.id, kind: "cycle-node", label: it, bbox: nr, parts: [...strokeParts(paths, color, 3, 0, 0.5, ellipsePoints(nr.x + nr.w / 2, nr.y + nr.h / 2, nr.w / 2, nr.h / 2)), { ...part, a: 0.4, b: 1 }], natural: 0.55 + textDur(it) * 0.5, seq: k * 2, seqCount: n * 2 }));
+        const paths = roughEllipse(nr.x + nr.w / 2, nr.y + nr.h / 2, nr.w, nr.h, seed + k * 5, { stroke: color, ...hatchFill(tint, 11) });
+        const { part } = textPart(it, { x: nr.x + nr.w * 0.12, y: nr.y + nr.h * 0.16, w: nr.w * 0.76, h: nr.h * 0.68 }, INK.ink, { max: 40, min: 15, maxLines: 2, anchor: "middle", halo: BOARD_BG });
+        out.push(
+          el({
+            id: `${a.id}.${k}`,
+            actionId: a.id,
+            kind: "cycle-node",
+            label: it,
+            bbox: nr,
+            parts: [
+              ...strokeParts(paths, color, 3, 0, 0.42, ellipsePoints(nr.x + nr.w / 2, nr.y + nr.h / 2, nr.w / 2, nr.h / 2), undefined, { color: tint, a: 0.36, b: 0.6, opacity: 0.85 }),
+              { ...part, a: 0.5, b: 1 },
+            ],
+            natural: 0.7 + textDur(it) * 0.5,
+            seq: k * 2,
+            seqCount: n * 2,
+          }),
+        );
         // Arc from node k to node k+1 along the ring, trimmed outside both nodes.
         const k2 = (k + 1) % n;
         const a0 = angle(k);
@@ -460,8 +611,23 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
           const parts: Part[] = [
             ...strokeParts(roughCurve(sample, seed + k * 11, { stroke: color, strokeWidth: 3 }), color, 3, 0, 0.8, arc),
             ...strokeParts(roughLinear([h1, tip, h2], seed + k * 17, { stroke: color, strokeWidth: 3 }), color, 3, 0.8, 1),
+            { type: "flow", d: polyD(arc.slice(0, Math.max(2, arc.length - 3))), color, a: 1, b: 1 },
           ];
-          out.push(el({ id: `${a.id}.a${k}`, actionId: a.id, kind: "cycle-arrow", label: null, bbox: union([{ x: tip[0], y: tip[1], w: 1, h: 1 }, { x: arc[0][0], y: arc[0][1], w: 1, h: 1 }]), parts, natural: 0.45, seq: k * 2 + 1, seqCount: n * 2, clickable: false }));
+          out.push(
+            el({
+              id: `${a.id}.a${k}`,
+              actionId: a.id,
+              kind: "cycle-arrow",
+              label: null,
+              bbox: union(arc.map(([x, y]) => ({ x, y, w: 1, h: 1 }))),
+              parts,
+              natural: 0.45,
+              seq: k * 2 + 1,
+              seqCount: n * 2,
+              clickable: false,
+              ambient: true,
+            }),
+          );
         }
       });
       return out;
@@ -516,26 +682,145 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
       const yTip: Pt = [axisX, p.y];
       const [xh1, xh2] = arrowHead(xTip, [p.x, axisY], 16);
       const [yh1, yh2] = arrowHead(yTip, [axisX, p.y + p.h], 16);
-      const parts: Part[] = [
+      const curveEnd = text ? 0.82 : 0.92;
+      const parts: Part[] = [];
+      // When the curve is one unbroken stroke, shade the area under it once it's drawn.
+      const continuous = trail.length === xs.length && trail.length > 1;
+      if (continuous) {
+        const area = `M${trail[0][0].toFixed(1)} ${axisY.toFixed(1)} ${trail.map(([x, y]) => `L${x.toFixed(1)} ${y.toFixed(1)}`).join(" ")} L${trail[trail.length - 1][0].toFixed(1)} ${axisY.toFixed(1)} Z`;
+        parts.push({ type: "fill", d: area, color: washOf(a.color, "blue"), a: curveEnd - 0.06, b: curveEnd + 0.08, opacity: 0.9 });
+      }
+      parts.push(
         ...strokeParts(roughLine(p.x, axisY, xTip[0], axisY, seed, { strokeWidth: 2.5 }), INK.ink, 2.5, 0, 0.16, [[p.x, axisY], xTip]),
         ...strokeParts(roughLinear([xh1, xTip, xh2], seed + 2, { strokeWidth: 2.5 }), INK.ink, 2.5, 0.16, 0.2),
         ...strokeParts(roughLine(axisX, p.y + p.h, axisX, yTip[1], seed + 1, { strokeWidth: 2.5 }), INK.ink, 2.5, 0.12, 0.26, [[axisX, p.y + p.h], yTip]),
         ...strokeParts(roughLinear([yh1, yTip, yh2], seed + 3, { strokeWidth: 2.5 }), INK.ink, 2.5, 0.26, 0.3),
-        { type: "stroke", d: d.trim(), color, width: 4.5, a: 0.3, b: text ? 0.88 : 1, trail },
+        { type: "stroke", d: d.trim(), color, width: 4.5, a: 0.3, b: curveEnd, trail },
+      );
+      if (text) parts.push({ ...textPart(text, { x: r.x, y: r.y, w: r.w, h: labelH }, color, { max: 42, min: 18, maxLines: 1, anchor: "middle" }).part, a: 0.84, b: 1 });
+      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text || a.expr, bbox: r, parts, natural: 2.3 })];
+    }
+    case "bars": {
+      const entries = parseBars(a.items);
+      if (entries.length < 2) return buildElement({ ...a, kind: "list" }, rect, warnings);
+      const r = inset(rect, 12);
+      const n = entries.length;
+      const valueSize = clamp(r.h * 0.11, 22, 40);
+      const labelH = clamp(r.h * 0.17, 34, 64);
+      const top = r.y + valueSize * 1.5;
+      const base = r.y + r.h - labelH;
+      const slot = r.w / n;
+      const barW = clamp(slot * 0.62, 26, 170);
+      const max = Math.max(...entries.map((e) => e.value));
+      const tint = tintOf(a.color, "blue");
+      const axis = el({
+        id: `${a.id}.axis`,
+        actionId: a.id,
+        kind: "bars-axis",
+        label: null,
+        bbox: { x: r.x, y: base - 2, w: r.w, h: 4 },
+        parts: strokeParts(roughLine(r.x - 6, base, r.x + r.w + 6, base + 2, seed, { strokeWidth: 3 }), INK.ink, 3, 0, 1, [[r.x - 6, base], [r.x + r.w + 6, base]]),
+        natural: 0.4,
+        clickable: false,
+        seq: 0,
+        seqCount: n + 1,
+      });
+      const bars = entries.map((e, k) => {
+        const x = r.x + slot * k + (slot - barW) / 2;
+        const h = max > 0 ? Math.max(8, (Math.max(0, e.value) / max) * (base - top)) : 8;
+        const paths = roughRect(x, base - h, barW, h, seed + k * 7, { stroke: color, ...hatchFill(tint, 10) });
+        const label = textPart(e.label, { x: x - (slot - barW) / 2 + 4, y: base + 6, w: slot - 8, h: labelH - 8 }, INK.ink, { max: 34, min: 14, maxLines: 2, anchor: "middle" });
+        return el({
+          id: `${a.id}.${k}`,
+          actionId: a.id,
+          kind: "bar",
+          label: `${e.label}: ${e.display}`,
+          bbox: { x, y: base - h - valueSize * 1.3, w: barW, h: h + valueSize * 1.3 },
+          parts: [
+            {
+              type: "bar",
+              x,
+              w: barW,
+              h,
+              base,
+              outline: paths.find((p) => p.kind === "outline")?.d ?? "",
+              hatch: paths.find((p) => p.kind === "hatch")?.d ?? "",
+              color,
+              tint,
+              value: { text: e.display, num: countsUp(e.display, parseNumber(e.display)) ? parseNumber(e.display) : null, size: valueSize },
+              a: 0,
+              b: 0.85,
+            },
+            { ...label.part, a: 0.1, b: 0.6 },
+          ],
+          natural: 1.1,
+          seq: k + 1,
+          seqCount: n + 1,
+        });
+      });
+      return [axis, ...bars];
+    }
+    case "number": {
+      // A key quantity that counts up as it appears, on a pale colour spot, with an optional caption.
+      if (!/\d/.test(text)) return buildElement({ ...a, kind: "text" }, rect, warnings);
+      const r = inset(rect, 10);
+      const caption = (a.items?.[0] ?? "").trim();
+      const capH = caption ? clamp(r.h * 0.3, 30, 60) : 0;
+      const box: Rect = { x: r.x, y: r.y, w: r.w, h: r.h - capH };
+      const fit = fitText(text, box.w * 0.92, box.h * 0.8, { max: 120, min: 26, maxLines: 1 });
+      const width = textWidth(fit.lines[0] ?? text, fit.size);
+      const cx = box.x + box.w / 2;
+      const baseline = box.y + box.h / 2 + fit.size * 0.33;
+      const num = parseNumber(text);
+      const parts: Part[] = [
+        blobPart(cx, box.y + box.h / 2 + 4, Math.min(box.w, width + fit.size * 0.9), Math.min(box.h, fit.size * 1.25), washOf(a.color, "orange"), seed + 5, 0, 0.18),
+        { type: "count", x: cx, y: baseline, size: fit.size, color, anchor: "middle", weight: 700, text, num: countsUp(text, num) ? num : null, a: 0.05, b: 0.8 },
       ];
-      if (text) parts.push({ ...textPart(text, { x: r.x, y: r.y, w: r.w, h: labelH }, color, { max: 42, min: 18, maxLines: 1, anchor: "middle" }).part, a: 0.82, b: 1 });
-      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: text || a.expr, bbox: r, parts, natural: 2.2 })];
+      if (caption) parts.push({ ...textPart(caption, { x: r.x - 10, y: r.y + r.h - capH, w: r.w + 20, h: capH }, INK.ink, { max: 40, min: 16, maxLines: 2, anchor: "middle" }).part, a: 0.7, b: 1 });
+      return [el({ id: a.id, actionId: a.id, kind: a.kind, label: caption ? `${text} ${caption}` : text, bbox: r, parts, natural: 1.5 + (caption ? textDur(caption) * 0.4 : 0) })];
     }
     default:
       return [];
   }
 }
 
-function arrowElement(id: string, actionId: string, p1: Pt, p2: Pt, color: string, label: string | null, seed: number, seq = 0, seqCount = 1, head = true): BoardElement {
+/** Bar chart items such as "Year 1: $110", "Mars = 0.38" or "Cats 40%": label, numeric value and how to show it. */
+export function parseBars(items: string[] | null): { label: string; value: number; display: string }[] {
+  const out: { label: string; value: number; display: string }[] = [];
+  for (const raw of (items ?? []).slice(0, 8)) {
+    const s = raw.trim();
+    const sep = Math.max(s.lastIndexOf(":"), s.lastIndexOf("="));
+    let label: string;
+    let display: string;
+    if (sep > 0) {
+      label = s.slice(0, sep).trim();
+      display = s.slice(sep + 1).trim();
+    } else {
+      const m = /(-?[$€£]?\d[\d,]*(?:\.\d+)?\s*%?\S*)\s*$/.exec(s);
+      if (!m) return [];
+      label = s.slice(0, m.index).trim();
+      display = m[1].trim();
+    }
+    const num = parseNumber(display);
+    if (!num || !label) return [];
+    out.push({ label, value: num.value, display });
+  }
+  return out;
+}
+
+const polyD = (pts: Pt[]) => pts.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
+
+function arrowElement(id: string, actionId: string, p1: Pt, p2: Pt, color: string, label: string | null, seed: number, seq = 0, seqCount = 1, head = true, flow = false): BoardElement {
   const parts: Part[] = strokeParts(roughLine(p1[0], p1[1], p2[0], p2[1], seed, { stroke: color, strokeWidth: 3 }), color, 3, 0, head ? 0.75 : 1, [p1, p2]);
   if (head) {
     const [h1, h2] = arrowHead(p2, p1, 20);
     parts.push(...strokeParts(roughLinear([h1, p2, h2], seed + 1, { stroke: color, strokeWidth: 3 }), color, 3, 0.75, 1));
+  }
+  const len = Math.hypot(p2[0] - p1[0], p2[1] - p1[1]);
+  // Beads flow along the shaft once it's drawn (stopping short of the head).
+  if (flow && head && len > 60) {
+    const k = (len - 18) / len;
+    parts.push({ type: "flow", d: polyD([p1, [p1[0] + (p2[0] - p1[0]) * k, p1[1] + (p2[1] - p1[1]) * k]]), color, a: 1, b: 1 });
   }
   let bbox = union([{ x: p1[0], y: p1[1], w: 1, h: 1 }, { x: p2[0], y: p2[1], w: 1, h: 1 }]);
   if (label) {
@@ -548,8 +833,36 @@ function arrowElement(id: string, actionId: string, p1: Pt, p2: Pt, color: strin
     parts.push({ ...t.part, a: 0.55, b: 1 });
     bbox = union([bbox, t.bbox]);
   }
-  return el({ id, actionId, kind: "arrow", label, bbox, parts, natural: label ? 0.9 : 0.5, seq, seqCount, clickable: !!label });
+  return el({ id, actionId, kind: "arrow", label, bbox, parts, natural: label ? 0.9 : 0.5, seq, seqCount, clickable: !!label, ambient: flow && head && len > 60 });
 }
+
+/** A gentle arc between two elements (for things that travel without an arrow). */
+function arcBetween(from: Rect, to: Rect): Pt[] {
+  const c1 = center(from);
+  const c2 = center(to);
+  const p1 = edgePoint(from, c2, 6);
+  const p2 = edgePoint(to, c1, 6);
+  const dx = p2[0] - p1[0];
+  const dy = p2[1] - p1[1];
+  const dist = Math.hypot(dx, dy) || 1;
+  // Bow the arc upwards (or to the left when travelling straight up/down).
+  let nx = -dy / dist;
+  let ny = dx / dist;
+  if (ny > 0 || (Math.abs(ny) < 1e-6 && nx > 0)) {
+    nx = -nx;
+    ny = -ny;
+  }
+  const bow = Math.min(140, dist * 0.18);
+  const cx = (p1[0] + p2[0]) / 2 + nx * bow;
+  const cy = (p1[1] + p2[1]) / 2 + ny * bow;
+  return Array.from({ length: 25 }, (_, i) => {
+    const t = i / 24;
+    const u = 1 - t;
+    return [u * u * p1[0] + 2 * u * t * cx + t * t * p2[0], u * u * p1[1] + 2 * u * t * cy + t * t * p2[1]] as Pt;
+  });
+}
+
+const pathLength = (pts: Pt[]) => pts.reduce((s, p, i) => (i ? s + Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) : 0), 0);
 
 /* ------------------------------------------------------------------ */
 /* Scene layout                                                        */
@@ -570,7 +883,7 @@ export function layoutScene(actions: Action[], opts: LayoutOptions = {}): SceneL
   const labels: [string, string][] = [];
 
   const register = (e: BoardElement, path?: Pt[]) => {
-    refs.set(e.id, { bbox: e.bbox, el: e, path });
+    refs.set(e.id, { bbox: e.bbox, el: e, path, ids: [e.id] });
     if (e.label) labels.push([e.label.toLowerCase().trim(), e.id]);
   };
 
@@ -610,7 +923,7 @@ export function layoutScene(actions: Action[], opts: LayoutOptions = {}): SceneL
     if (built.length > 1) {
       const group = union(built.map((e) => e.bbox));
       const chain = built.filter((e) => e.kind.endsWith("-node")).map((e) => center(e.bbox));
-      refs.set(a.id, { bbox: group, path: chain.length > 1 ? chain : undefined });
+      refs.set(a.id, { bbox: group, path: chain.length > 1 ? chain : undefined, ids: built.map((e) => e.id) });
     }
   }
 
@@ -642,9 +955,31 @@ export function layoutScene(actions: Action[], opts: LayoutOptions = {}): SceneL
       if (Math.hypot(c2[0] - c1[0], c2[1] - c1[1]) < 30) continue;
       const p1 = edgePoint(from.bbox, c2, 12);
       const p2 = edgePoint(to.bbox, c1, 14);
-      const e = arrowElement(a.id, a.id, p1, p2, colorOf(a.color), a.text?.trim() || null, seedFrom(a.id), 0, 1, a.kind === "arrow");
+      const isArrow = a.kind === "arrow";
+      const e = arrowElement(a.id, a.id, p1, p2, colorOf(a.color), a.text?.trim() || null, seedFrom(a.id), 0, 1, isArrow, isArrow);
+      e.deps = [...from.ids, ...to.ids];
       elements.push(e);
       register(e, [p1, p2]);
+    } else if (a.kind === "trace") {
+      // Along an arrow or a flow, or straight from one element to another.
+      const along = resolve(a.target) ?? (a.from && a.to ? null : resolve(a.to ?? a.from));
+      let trail = along?.path ?? (along?.el ? pathOf(along.el) : undefined);
+      let deps = along?.ids ?? [];
+      if (!trail || trail.length < 2) {
+        const from = resolve(a.from);
+        const to = resolve(a.to);
+        if (from && to && from !== to) {
+          trail = arcBetween(from.bbox, to.bbox);
+          deps = [...from.ids, ...to.ids];
+        }
+      }
+      if (!trail || trail.length < 2) {
+        warnings.push(`trace ${a.id}: nothing to travel along ("${a.target ?? `${a.from} → ${a.to}`}")`);
+        continue;
+      }
+      const e = buildTrace(a, trail);
+      e.deps = deps;
+      elements.push(e);
     } else if (isAnnotationKind(a.kind)) {
       const target = resolve(a.target ?? a.to ?? a.from);
       if (!target) {
@@ -653,6 +988,7 @@ export function layoutScene(actions: Action[], opts: LayoutOptions = {}): SceneL
       }
       const e = buildAnnotation(a, target, occ, warnings);
       if (e) {
+        e.deps = target.ids;
         elements.push(e);
         register(e);
       }
@@ -673,11 +1009,42 @@ function textInfo(e?: BoardElement) {
   return t && t.type === "text" ? t : null;
 }
 
+/** Annotations that make their target give a little bump as they start. */
+const EMPHASIS = new Set(["pulse", "circle_around", "check", "callout"]);
+
+/** A dot (or a small icon or word) that travels along a path, with a fading comet tail. */
+function buildTrace(a: Action, trail: Pt[]): BoardElement {
+  const color = colorOf(a.color, "orange");
+  const iconName = resolveIcon(a.icon);
+  const icon = iconName ? iconNodes(iconName) : null;
+  const label = !icon && a.text?.trim() ? a.text.trim().slice(0, 16) : null;
+  const token = icon || label ? { icon, label, wash: washOf(a.color, "orange") } : undefined;
+  return el({
+    id: a.id,
+    actionId: a.id,
+    kind: a.kind,
+    label: null,
+    clickable: false,
+    bbox: onBoard(union(trail.map(([x, y]) => ({ x: x - 20, y: y - 20, w: 40, h: 40 })))),
+    parts: [{ type: "dot", trail, color, r: 12, a: 0, b: 1, token }],
+    natural: clamp(pathLength(trail) / 420, 1.3, 2.6),
+    transient: true,
+  });
+}
+
 function buildAnnotation(a: Action, target: Ref, occ: Occupancy, warnings: string[]): BoardElement | null {
   const seed = seedFrom(a.id);
   const T = target.bbox;
-  const base = { id: a.id, actionId: a.id, kind: a.kind, label: null, clickable: false };
+  const base = { id: a.id, actionId: a.id, kind: a.kind, label: null, clickable: false, targets: EMPHASIS.has(a.kind) ? target.ids : undefined };
   switch (a.kind) {
+    case "pulse": {
+      // Rings spread out from the target while it bumps: "look here".
+      const [cx, cy] = center(T);
+      const color = colorOf(a.color, "orange");
+      const rx = T.w / 2 + 22;
+      const ry = T.h / 2 + 22;
+      return el({ ...base, bbox: onBoard({ x: cx - rx * 1.4, y: cy - ry * 1.4, w: rx * 2.8, h: ry * 2.8 }), parts: [{ type: "ripple", cx, cy, rx, ry, color, a: 0, b: 1 }], natural: 1.3, transient: true });
+    }
     case "highlight": {
       const t = textInfo(target.el);
       const strokes: Part[] = [];
@@ -751,7 +1118,7 @@ function buildAnnotation(a: Action, target: Ref, occ: Occupancy, warnings: strin
         [x0 + s * 0.38, y0 + s],
         [x0 + s, y0],
       ];
-      return el({ ...base, bbox: { x: x0, y: y0, w: s, h: s }, parts: strokeParts(roughLinear(pts, seed, { stroke: color, strokeWidth: 6 }), color, 6, 0, 1, pts), natural: 0.45 });
+      return el({ ...base, bbox: { x: x0, y: y0, w: s, h: s }, parts: strokeParts(roughLinear(pts, seed, { stroke: color, strokeWidth: 6 }), color, 6, 0, 1, pts), natural: 0.45, pop: true });
     }
     case "callout": {
       const text = (a.text ?? "").trim();
@@ -776,14 +1143,6 @@ function buildAnnotation(a: Action, target: Ref, occ: Occupancy, warnings: strin
       const to = edgePoint(T, center(tb), 10);
       const arrow = arrowElement(`${a.id}.arrow`, a.id, from, to, color, null, seed);
       return el({ ...base, label: text, clickable: true, bbox: union([tb, arrow.bbox]), parts: [{ ...t.part, a: 0, b: 0.6 }, ...arrow.parts.map((p) => ({ ...p, a: 0.55 + p.a * 0.45, b: 0.55 + p.b * 0.45 }))], natural: textDur(text) + 0.5 });
-    }
-    case "trace": {
-      const path = target.path ?? (target.el ? pathOf(target.el) : undefined);
-      if (!path || path.length < 2) {
-        warnings.push(`trace ${a.id}: target "${a.target}" has no path`);
-        return null;
-      }
-      return el({ ...base, bbox: union(path.map(([x, y]) => ({ x, y, w: 1, h: 1 }))), parts: [{ type: "dot", trail: path, color: colorOf(a.color, "orange"), r: 12, a: 0, b: 1 }], natural: 1.6, transient: true });
     }
     default:
       return null;

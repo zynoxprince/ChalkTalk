@@ -3,6 +3,7 @@ import type { Color } from "@/lib/lesson/schema";
 /** Logical board size. The SVG scales this to any screen via its viewBox. */
 export const BOARD_W = 1600;
 export const BOARD_H = 900;
+export const BOARD_BG = "#fdfcf8";
 
 /** Title band at the top of every board. */
 export const TITLE = { x: 64, baseline: 98, size: 68, maxWidth: 1470 };
@@ -19,6 +20,24 @@ export const INK: Record<Color, string> = {
   red: "#dc2626",
   orange: "#ea580c",
   purple: "#7c3aed",
+};
+/** Light tints for hand-hatched fills ("coloured in" shapes). */
+export const HATCH: Record<Color, string> = {
+  ink: "#d6d3d1",
+  blue: "#93c5fd",
+  green: "#86efac",
+  red: "#fca5a5",
+  orange: "#fdba74",
+  purple: "#c4b5fd",
+};
+/** Pale washes behind icons, numbers and tokens. */
+export const WASH: Record<Color, string> = {
+  ink: "#efeae0",
+  blue: "#dbeafe",
+  green: "#dcfce7",
+  red: "#fee2e2",
+  orange: "#ffedd5",
+  purple: "#ede9fe",
 };
 export const MARKER_YELLOW = "#facc15";
 export const NOTE_FILL = "#fef3c7";

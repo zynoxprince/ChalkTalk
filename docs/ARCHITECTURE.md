@@ -67,15 +67,17 @@ The model never outputs coordinates in pixels or SVG. It writes a small, typed b
 
 | Group | Kinds |
 | --- | --- |
-| Elements (take space) | `text`, `note`, `box`, `circle`, `icon`, `list`, `flow`, `cycle`, `plot` |
+| Elements (take space) | `text`, `note`, `box`, `circle`, `icon`, `list`, `flow`, `cycle`, `plot`, `bars`, `number` |
 | Connectors | `arrow`, `line` |
-| Annotations (target an element, or `id[index]` for a part of a list/flow/cycle) | `highlight`, `circle_around`, `underline`, `cross_out`, `check`, `callout`, `trace` |
+| Annotations (target an element, or `id[index]` for a part of a list/flow/cycle/bar chart) | `highlight`, `circle_around`, `underline`, `cross_out`, `check`, `callout`, `pulse`, `trace` |
+
+`bars` is a bar chart from items such as `"Year 1: $110"` (bars grow, values count up); `number` is one key quantity that counts up as it appears; `pulse` sends rings out from its target; `trace` sends a dot, or a small icon or word, along an arrow, flow or cycle, or flying from one element to another (`from`, `to`).
 
 Design choices:
 
 - **Flat actions with nullable fields** instead of a discriminated union. Every field is always present (`null` when unused), which strict structured-output modes accept across providers. Per-kind rules are enforced afterwards.
 - **zod is the single source of truth.** `toStrictJsonSchema()` converts the zod schema into the strict JSON Schema sent with each request (all properties required, `additionalProperties: false`, nullables as type unions), and the same zod schema validates the response.
-- **Repair, not rejection** (`src/lib/lesson/repair.ts`). After validation, each action is made sensible: narration is stripped of anything unspeakable, ids are sanitised and de-duplicated, actions missing required fields are dropped, label lengths are capped, icon names are resolved through aliases (`water` → `droplet`), and if a cue phrase doesn't occur in the narration it is re-anchored to the element's label when that is spoken.
+- **Repair, not rejection** (`src/lib/lesson/repair.ts`). After validation, each action is made sensible: narration is stripped of anything unspeakable, ids are sanitised and de-duplicated, actions missing required fields are dropped, label lengths are capped, icon names are resolved through aliases (`water` → `droplet`), bars without numbers become a list and numbers without digits become text, and if a cue phrase doesn't occur in the narration it is re-anchored to the element's label when that is spoken.
 
 ## 3. Layout engine
 
@@ -83,11 +85,11 @@ Design choices:
 
 1. **Grid placement.** A title band on top, then a 12 × 6 grid. An element goes where the model asked if those cells are free; otherwise to the nearest free slot of the same size (shrinking gradually if needed). The model's spatial intent is respected while overlaps are prevented.
 2. **Text fitting.** Widths come from a per-glyph table measured from the handwriting font in a browser (with a small safety margin), so layout is deterministic and testable without a DOM. Text shrinks and wraps to fit its box.
-3. **Composites.** Lists, flows (horizontal or vertical depending on the box), cycles (nodes on an ellipse, arcs trimmed outside the nodes) and plots (axes, a curve sampled from a safe expression parser, robust y-range) are laid out by code and broken into sub-elements (`flow.2`, `flow.a1`, …) that can be targeted and revealed one by one.
-4. **References.** Arrows and annotations resolve targets by id, by `id[index]`, or by label text. Unknown references are dropped with a warning (visible in `/playground`) rather than drawn wrongly.
-5. **Hand-drawn strokes.** rough.js's generator is DOM-free, so sketchy paths are computed once during layout with a fixed seed per element; frames never re-randomise.
+3. **Composites.** Lists, flows (horizontal or vertical depending on the box), cycles (nodes on an ellipse, arcs trimmed outside the nodes), plots (axes, a curve sampled from a safe expression parser, robust y-range, a shaded area under unbroken curves) and bar charts (an axis plus one bar per item, scaled to the largest value) are laid out by code and broken into sub-elements (`flow.2`, `flow.a1`, `chart.1`, …) that can be targeted and revealed one by one.
+4. **References.** Arrows and annotations resolve targets by id, by `id[index]`, or by label text. Unknown references are dropped with a warning (visible in `/playground`) rather than drawn wrongly. Each connector, annotation and trace records what it refers to (`deps`), and the elements an emphasising annotation points at (`targets`).
+5. **Hand-drawn strokes.** rough.js's generator is DOM-free, so sketchy paths are computed once during layout with a fixed seed per element; frames never re-randomise. Shapes get a light **hand-hatched fill** in their colour (rough.js hachure), icons and key numbers a pale colour spot, sticky notes a soft shadow; labels over hatching get a paper-coloured halo so they stay crisp.
 
-Each element is a list of **parts** (`stroke`, `fill`, `text`, `icon`, `dot`), each revealed during a sub-interval `[a, b]` of the element's progress. A labelled box, for example, draws its outline during `[0, 0.55]` and writes its label during `[0.45, 1]`.
+Each element is a list of **parts** (`stroke`, `fill`, `text`, `icon`, `dot`, `flow`, `ripple`, `bar`, `count`), each revealed during a sub-interval `[a, b]` of the element's progress. A labelled box, for example, draws its outline during `[0, 0.42]`, is coloured in during `[0.36, 0.62]` and writes its label during `[0.55, 1]`.
 
 ## 4. Timeline and synchronisation
 
@@ -96,20 +98,25 @@ Each element is a list of **parts** (`stroke`, `fill`, `text`, `icon`, `dot`), e
 - **Segments** are laid end to end: start = previous end + 0.35 s (1.1 s between boards, with an erase animation in that gap). Durations come from the decoded audio, so segment boundaries are exact.
 - **Cues inside a segment.** An action starts at `segment.start + f · duration − 0.15 s`, where `f` is the fraction of the narration spoken before the cue phrase. `f` is weighted by how long characters take to say: letters 1, spaces 0.55, commas 3, full stops 5.5, because speech pauses at punctuation. The 0.15 s lead makes the drawing begin as the word is said, like a teacher's hand.
 - **Composites spread out** across the rest of their segment, so list items and flow steps appear as they are talked through.
+- **Dependencies.** Nothing starts before what it refers to is on the board: an arrow waits for both ends, an annotation for its target, a travelling token for its path. This also protects against cues the model put slightly out of order.
+- **Emphasis.** When a `pulse`, `circle_around`, `check` or `callout` starts, its target gets a short bump (scale 1 → 1.07 → 1).
+- **Camera** (`src/lib/board/camera.ts`). Each board gets a planned list of camera moves: drawings that start within 1.5 s of each other are framed together (a whole diagram as it builds, an arrow together with both ends); the camera eases in (at most 1.32×) about 0.45 s before the pen lands, holds still while new drawing already fits in view, drifts back to the whole board when the narration stops drawing for a few seconds, waits for the title to be written, and always shows the whole board before it's erased. Moves are interpolated with an ease-in-out curve; a move that starts mid-move starts from where the camera actually is, so there are no jumps.
 - **Readiness.** The timeline records `readyUntil`: the end of the last contiguous segment that has audio (or has definitively fallen back to silence). Boards still being generated reserve estimated time, so the seek bar can show them in advance. A board that is partially streamed is playable up to its last segment.
 
-The board at any moment is a pure function, `frameAt(timeline, t)` in `src/lib/board/state.ts`: the active scene, each started element with its progress `p ∈ (0, 1]`, the eraser progress, the segment being spoken and the current word for captions. Nothing about the drawing depends on history, which is why seeking backwards or forwards, pausing mid-stroke or switching tabs is exact.
+The board at any moment is a pure function, `frameAt(timeline, t)` in `src/lib/board/state.ts`: the active scene, each started element with its progress `p ∈ (0, 1]` (eased like a hand: it speeds up and slows down but never stalls), its bump phase and its age since it finished, the camera view, the eraser progress, the segment being spoken and the current word for captions. Nothing about the drawing depends on history, which is why seeking backwards or forwards, pausing mid-stroke or switching tabs is exact, camera included.
 
 ## 5. Rendering
 
 `src/components/board/` renders a frame as SVG:
 
-- Strokes use `pathLength="1"` and `stroke-dashoffset = 1 − p`: no path measurement needed.
+- The camera is the SVG `viewBox`: moving it costs no React work and keeps every stroke crisp.
+- Strokes use `pathLength="1"` and `stroke-dashoffset = 1 − p`: no path measurement needed. Hatching is revealed the same way, so shapes are "coloured in" stroke by stroke.
 - Text is written left to right behind a clip rectangle, line by line, with a pen cursor at the edge.
-- Line-art drawings (Lucide icons) are drawn sub-path by sub-path under a subtle turbulence filter, which gives them a hand-drawn wobble.
-- Finished elements are memoised (`p` stays at 1), so each animation frame only re-renders what is currently being drawn.
+- Line-art drawings (Lucide icons) are drawn sub-path by sub-path over their colour spot, which pops in first with a small overshoot. Sticky notes and ticks pop in the same way.
+- Once an arrow is drawn, a glowing packet runs along it every few seconds, showing the direction of flow (cycles visibly turn). Travelling tokens leave a short comet tail; `pulse` draws two expanding rings; bars grow from the axis with a little overshoot while their values count up; numbers count up from zero (years and the like are written, not counted).
+- Finished elements are memoised (`p` stays at 1); only elements that keep moving (flowing arrows) re-render every frame. There are no SVG filters, which are expensive to repaint while the camera moves. With 4× CPU throttling, playback holds 60 fps in our tests.
 - Clickable elements (anything with a label) become focusable buttons with an "Ask about …" label.
-- With `prefers-reduced-motion`, elements appear fully drawn at their cue.
+- With `prefers-reduced-motion`, elements appear fully drawn at their cue, nothing keeps moving and the camera stays on the whole board.
 
 ## 6. Player
 
@@ -196,7 +203,8 @@ The answer is compiled as its own small timeline whose **base** is the paused bo
 - **Layout:** every fixture element stays on the board; overlaps are resolved; out-of-range cells are clamped; composite parts and labels resolve as targets; unknown references are reported.
 - **Timing:** cue finding is tolerant of case and punctuation, fractions are monotonic, segments don't overlap, drawings start near their cue words, readiness stops at missing audio and at partially streamed boards.
 - **`frameAt`:** the same frame for the same time regardless of history; elements hidden before their start and complete after their end; erasing before the next board; transient elements disappear; captions track the spoken word.
+- **Camera and motion:** the view always stays on the board, keeps its shape and never zooms past the limit; every board starts and ends in full view; the view is a pure function of time; it holds still while new drawing already fits; annotated elements bump briefly; arrows keep flowing after they're drawn; tokens wait until both ends are drawn; bar charts and counting numbers parse and format their values.
 - **Player** (fake audio clock): follows the audio clock, freezes on pause, schedules audio at the right offsets, seeks while playing or paused, waits for missing audio and resumes, never seeks past generated content, ends and restarts, compensates output latency, falls back to a wall clock, and drives the fallback narrator (including holding at segment ends).
-- **Pipeline:** the streaming array extractor across arbitrary chunk boundaries, narration cleaning, action repair, id continuity across streamed segments, transcript classification (exact, close, ad-libbed ending, mismatch), and the safe expression parser.
+- **Pipeline:** the streaming array extractor across arbitrary chunk boundaries, narration cleaning, action repair (including bars without numbers and traces between two elements), id continuity across streamed segments, transcript classification (exact, close, ad-libbed ending, mismatch), speech audio parsing, and the safe expression parser.
 
 The `/playground` page renders a hand-written lesson through the same engine without any AI, which makes visual changes easy to check.

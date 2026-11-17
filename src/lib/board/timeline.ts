@@ -1,6 +1,7 @@
 import type { Scene, SceneKind } from "@/lib/lesson/schema";
+import { FULL_VIEW, planCamera, unite, type CameraKey } from "./camera";
 import { CUE_LEAD, SCENE_GAP, SEGMENT_GAP, WORDS_PER_SECOND } from "./constants";
-import { layoutScene, type BoardElement, type SceneLayout } from "./layout";
+import { layoutScene, type BoardElement, type Rect, type SceneLayout } from "./layout";
 
 /**
  * Compiles scenes + measured audio durations into an absolute timeline.
@@ -12,6 +13,8 @@ export interface TimedElement extends BoardElement {
   start: number;
   dur: number;
   sceneId: string;
+  /** Times when an annotation points at this element (it gives a little bump). */
+  emphasis?: number[];
 }
 
 export interface Word {
@@ -44,6 +47,8 @@ export interface TimedScene {
   pending: boolean;
   elements: TimedElement[];
   warnings: string[];
+  /** Planned camera moves for this board. */
+  camera: CameraKey[];
 }
 
 export interface Timeline {
@@ -193,7 +198,18 @@ export function compileTimeline(
     if (input.pending || scene.segments.length === 0) {
       const est = input.estimatedDuration ?? 30;
       cursor += est;
-      scenes.push({ id: scene.id, kind: scene.kind, title: scene.title, start: sceneStart, contentEnd: cursor, end: cursor + SCENE_GAP, pending: true, elements: [], warnings: [] });
+      scenes.push({
+        id: scene.id,
+        kind: scene.kind,
+        title: scene.title,
+        start: sceneStart,
+        contentEnd: cursor,
+        end: cursor + SCENE_GAP,
+        pending: true,
+        elements: [],
+        warnings: [],
+        camera: [{ t: sceneStart, from: FULL_VIEW, to: FULL_VIEW }],
+      });
       cursor += SCENE_GAP;
       continue;
     }
@@ -253,8 +269,43 @@ export function compileTimeline(
 
     const contentEnd = cursor;
     cursor += SCENE_GAP;
+
+    // Nothing starts before what it refers to is on the board: an arrow waits
+    // for both its ends, a note for its target, a token for its path.
+    const byId = new Map(timed.map((e) => [e.id, e]));
+    for (let pass = 0; pass < 2; pass++) {
+      for (const e of [...timed].sort((p, q) => p.start - q.start)) {
+        for (const id of e.deps ?? []) {
+          const d = byId.get(id);
+          if (d && d !== e) e.start = Math.max(e.start, d.start + d.dur * 0.6);
+        }
+      }
+    }
     timed.sort((p, q) => p.start - q.start);
-    scenes.push({ id: scene.id, kind: scene.kind, title: scene.title, start: sceneStart, contentEnd, end: cursor, pending: false, elements: timed, warnings: layout.warnings });
+
+    // Annotations that point at something make it bump as they start.
+    for (const e of timed) {
+      for (const id of e.targets ?? []) {
+        const target = byId.get(id);
+        if (target) target.emphasis = [...(target.emphasis ?? []), e.start];
+      }
+    }
+
+    // The camera frames a whole diagram as it builds (not node by node), and
+    // an arrow or annotation together with what it connects or points at.
+    const groups = new Map<string, Rect>();
+    for (const e of timed) groups.set(e.actionId, groups.has(e.actionId) ? unite(groups.get(e.actionId)!, e.bbox) : e.bbox);
+    const focus = timed.map((e) => {
+      let bbox = e.seqCount > 1 ? (groups.get(e.actionId) ?? e.bbox) : e.bbox;
+      for (const id of e.deps ?? []) {
+        const d = byId.get(id);
+        if (d) bbox = unite(bbox, d.bbox);
+      }
+      return { start: e.start, dur: e.dur, kind: e.kind, bbox };
+    });
+    // A board still being written isn't over yet: no "show the whole board before erasing" move.
+    const camera = planCamera(focus, sceneStart, contentEnd, { final: !input.partial });
+    scenes.push({ id: scene.id, kind: scene.kind, title: scene.title, start: sceneStart, contentEnd, end: cursor, pending: false, elements: timed, warnings: layout.warnings, camera });
   }
 
   if (scenes.length) scenes[scenes.length - 1].end = scenes[scenes.length - 1].contentEnd + 0.6;

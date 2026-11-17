@@ -130,3 +130,34 @@ describe("speech audio parsing", () => {
     expect(isChatAudioModel("openai/gpt-4o-mini-tts-2025-12-15")).toBe(false);
   });
 });
+
+describe("repair of the newer board tools", () => {
+  it("turns bars without numbers into a list, and numbers without digits into text", () => {
+    const [seg] = repairSegments(
+      [
+        {
+          narration: "Compare the three options. The answer is many.",
+          actions: [
+            act({ id: "b", kind: "bars", items: ["Fast", "Cheap", "Good"], cue: "Compare" }),
+            act({ id: "n", kind: "number", text: "many", cue: "The answer" }),
+            act({ id: "ok", kind: "bars", items: ["A: 1", "B: 2"], cue: "three options" }),
+          ],
+        },
+      ],
+      { sceneId: "c1", sign: () => "" },
+    );
+    expect(seg.actions.map((a) => [a.id, a.kind])).toEqual([
+      ["b", "list"],
+      ["n", "text"],
+      ["ok", "bars"],
+    ]);
+  });
+
+  it("keeps a trace that flies between two elements", () => {
+    const [seg] = repairSegments(
+      [{ narration: "Energy moves from the sun to the leaf.", actions: [act({ id: "t", kind: "trace", from: "sun", to: "leaf", icon: "zap", cue: "Energy moves" })] }],
+      { sceneId: "c1", sign: () => "" },
+    );
+    expect(seg.actions[0]).toMatchObject({ kind: "trace", from: "sun", to: "leaf", target: null });
+  });
+});

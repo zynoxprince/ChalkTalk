@@ -1,5 +1,7 @@
+import { drawEase } from "./anim";
+import { cameraAt, FULL_VIEW } from "./camera";
 import { ERASE_TIME, SCENE_GAP } from "./constants";
-import type { Pt } from "./layout";
+import type { Pt, Rect } from "./layout";
 import type { TimedElement, TimedScene, TimedSegment, Timeline } from "./timeline";
 
 /**
@@ -7,10 +9,17 @@ import type { TimedElement, TimedScene, TimedSegment, Timeline } from "./timelin
  * calls this every animation frame, and seeking is just calling it with a new t.
  */
 
+/** How long an emphasised element's bump lasts. */
+export const BUMP_TIME = 0.55;
+
 export interface FrameItem {
   el: TimedElement;
-  /** Drawing progress, 0 (just started) .. 1 (done). */
+  /** Drawing progress, 0 (just started) .. 1 (done), eased like a hand. */
   p: number;
+  /** 0..1 through a bump when an annotation points at this element; 0 otherwise. */
+  bump: number;
+  /** Seconds since the element finished drawing (negative while drawing). */
+  age: number;
 }
 
 export interface Frame {
@@ -24,6 +33,8 @@ export interface Frame {
   wordIndex: number;
   /** The element currently being drawn (for the pen cursor). */
   active: FrameItem | null;
+  /** The part of the board the camera shows. */
+  view: Rect;
 }
 
 export function sceneIndexAt(tl: Timeline, t: number): number {
@@ -42,7 +53,7 @@ export function segmentAt(tl: Timeline, t: number): TimedSegment | null {
 }
 
 export function frameAt(tl: Timeline, t: number): Frame {
-  const empty: Frame = { t, scene: null, items: [], erase: 0, segment: null, wordIndex: -1, active: null };
+  const empty: Frame = { t, scene: null, items: [], erase: 0, segment: null, wordIndex: -1, active: null, view: FULL_VIEW };
   if (!tl.scenes.length) return empty;
   const si = sceneIndexAt(tl, t);
   const scene = tl.scenes[si];
@@ -50,11 +61,15 @@ export function frameAt(tl: Timeline, t: number): Frame {
   let active: FrameItem | null = null;
   for (const el of scene.elements) {
     if (el.start > t) continue;
-    const p = el.dur > 0 ? Math.min(1, (t - el.start) / el.dur) : 1;
-    if (el.transient && p >= 1) continue;
-    const item = { el, p };
+    const raw = el.dur > 0 ? Math.min(1, (t - el.start) / el.dur) : 1;
+    if (el.transient && raw >= 1) continue;
+    let bump = 0;
+    if (el.emphasis) {
+      for (const at of el.emphasis) if (t > at && t < at + BUMP_TIME) bump = (t - at) / BUMP_TIME;
+    }
+    const item: FrameItem = { el, p: raw >= 1 ? 1 : drawEase(raw), bump, age: t - el.start - el.dur };
     items.push(item);
-    if (p < 1 && (!active || el.start >= active.el.start)) active = item;
+    if (raw < 1 && (!active || el.start >= active.el.start)) active = item;
   }
 
   let erase = 0;
@@ -72,7 +87,7 @@ export function frameAt(tl: Timeline, t: number): Frame {
       else break;
     }
   }
-  return { t, scene, items, erase, segment: segment && t <= segment.end + 0.6 ? segment : null, wordIndex, active };
+  return { t, scene, items, erase, segment: segment && t <= segment.end + 0.6 ? segment : null, wordIndex, active, view: cameraAt(scene.camera, t) };
 }
 
 /** Position along a polyline at fraction f (0..1) of its length. */
@@ -115,6 +130,8 @@ export function penPosition(item: FrameItem | null): Pt | null {
     }
     if (part.type === "stroke" && part.trail) return pointAlong(part.trail, local);
     if (part.type === "icon") return [part.x + part.size * local, part.y + part.size * (0.3 + 0.4 * Math.sin(local * Math.PI))];
+    if (part.type === "bar") return [part.x + part.w * (0.2 + 0.6 * local), part.base - part.h * Math.min(1, local / 0.75)];
+    if (part.type === "count") return [part.x + part.size * (local - 0.5) * 1.6, part.y - part.size * 0.25];
   }
   return null;
 }

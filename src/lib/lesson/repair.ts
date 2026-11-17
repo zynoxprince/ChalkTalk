@@ -1,5 +1,6 @@
 import { findCue } from "@/lib/board/timeline";
 import { resolveIcon } from "@/lib/board/icons";
+import { parseBars } from "@/lib/board/layout";
 import type { Action, GeneratedSegment, Segment } from "./schema";
 
 /**
@@ -8,7 +9,7 @@ import type { Action, GeneratedSegment, Segment } from "./schema";
  * lengths, known icons, and cues that actually occur in the narration.
  */
 
-const LIMITS: Record<string, number> = { text: 60, note: 90, box: 40, circle: 36, icon: 30, callout: 40, arrow: 28, line: 28, plot: 30 };
+const LIMITS: Record<string, number> = { text: 60, note: 90, box: 40, circle: 36, icon: 30, callout: 40, arrow: 28, line: 28, plot: 30, number: 24, trace: 16 };
 
 export function cleanNarration(s: string): string {
   return s
@@ -66,8 +67,22 @@ function repairAction(a: Action, narration: string, index: number): Action | nul
     case "cycle":
       if (!out.items || out.items.length < 2) return null;
       break;
+    case "bars":
+      // Bars need numbers; without them it's still a fine list.
+      if (!out.items?.length) return null;
+      if (parseBars(out.items).length < 2) out.kind = "list";
+      break;
+    case "number":
+      if (!out.text) return null;
+      if (!/\d/.test(out.text)) out.kind = "text";
+      break;
     case "plot":
       if (!out.expr) return null;
+      break;
+    case "trace":
+      // Along something (target), or from one element to another.
+      if (!out.target && !(out.from && out.to)) out.target = out.to ?? out.from;
+      if (!out.target && !(out.from && out.to)) return null;
       break;
     case "arrow":
     case "line":

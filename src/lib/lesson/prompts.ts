@@ -22,6 +22,7 @@ const EXAMPLE = JSON.stringify(
       { id: "a1", kind: "arrow", cue: "light from the sun", text: null, items: null, icon: null, at: null, from: "sun", to: "leaf", target: null, color: null, expr: null },
       { id: "water", kind: "icon", cue: "water from the roots", text: "Water", items: null, icon: "droplet", at: { col: 1, row: 4, w: 2, h: 2 }, from: null, to: null, target: null, color: "blue", expr: null },
       { id: "a2", kind: "arrow", cue: "water from the roots", text: null, items: null, icon: null, at: null, from: "water", to: "leaf", target: null, color: null, expr: null },
+      { id: "t2", kind: "trace", cue: "from the roots", text: null, items: null, icon: "droplet", at: null, from: null, to: null, target: "a2", color: "blue", expr: null },
       { id: "co2", kind: "box", cue: "carbon dioxide", text: "CO₂", items: null, icon: null, at: { col: 9, row: 0, w: 2, h: 1 }, from: null, to: null, target: null, color: null, expr: null },
       { id: "a3", kind: "arrow", cue: "carbon dioxide", text: null, items: null, icon: null, at: null, from: "co2", to: "leaf", target: null, color: null, expr: null },
     ],
@@ -42,6 +43,7 @@ export const SYSTEM_PROMPT = `You are ChalkTalk, a brilliant and warm teacher wh
 - One idea per board. Draw in the order you explain, so the board makes sense as it grows.
 - The narration explains; the board shows. Board text is short labels (1–5 words, max ~8 for a note), never sentences copied from the narration.
 - Every segment changes the board: add, connect, annotate or emphasise something. Point at things with annotations as you mention them.
+- Make the board come alive where it helps understanding: show movement or transfer with trace (send a small icon along an arrow), compare amounts with bars, reveal a key quantity with number, and draw attention with pulse. Use at least one of these per chapter when it genuinely fits.
 - Narration is read aloud by a voice: write it exactly as it should be spoken. No markdown, emoji, bullet points, brackets, abbreviations or symbols that cannot be read aloud. Say "carbon dioxide" not "CO2", "x squared" not "x^2", "percent" not "%". Spell numbers naturally.
 - Be accurate. If something is uncertain, debated or changes over time, say so briefly. Never invent precise statistics, dates or quotes.
 
@@ -58,6 +60,8 @@ Elements (take space, need "at"):
 - flow: 2–5 steps in order (items) joined by arrows: a process or a chain of cause and effect. Horizontal: w 8–12, h 2. Vertical: w 3–4, h 4–6.
 - cycle: 3–6 stages in a loop (items). w 6–8, h 4–6.
 - plot: graph of a function of x (expr such as "x^2", "sin(x)", "2^x; 0..5" where "; a..b" sets the x range) with a label (text) like "y = x²". Only when a curve genuinely helps. w 4–6, h 3–4.
+- bars: a bar chart comparing 2–6 amounts (items, each "label: value", e.g. "Year 1: $110", "Mars: 38%"); the bars grow and their values count up. w 4–7, h 3–4.
+- number: one key quantity that counts up as it appears (text, e.g. "$133.10", "300,000 km/s", "70%"), with an optional 1–4 word caption (items: ["caption"], or null). w 2–4, h 2.
 
 Connectors (no "at"):
 - arrow: from one element to another (from, to are element ids), with an optional 1–3 word label (text) like "makes" or "+ heat".
@@ -70,7 +74,8 @@ Annotations (no "at"; target = the id of an element on this board; for one item 
 - cross_out: cross out a wrong idea (misconceptions).
 - check: a tick next to the right idea.
 - callout: a short note (text, at most 5 words) with an arrow pointing at the target.
-- trace: a moving dot along an arrow or a flow (target = that arrow's or flow's id) to show movement or order.
+- pulse: rings ripple out from the target and it bumps: "look here".
+- trace: something travels along an arrow, flow or cycle (target = its id), or flies from one element to another (from, to; target null), to show movement, transfer or order. Set icon (e.g. "droplet", "zap", "coins") or a 1–2 word text to send that instead of a dot.
 
 Field rules:
 - id: short, unique across the whole response (e.g. "sun", "steps", "a1").
@@ -174,7 +179,7 @@ Learner's question: "${c.question}"
 
 Answer like a teacher at the board:
 - reply: the answer for the chat, 1–3 short plain sentences.
-- mode: "annotate" to answer by marking up the current board (highlight, circle_around, callout, arrows between existing ids) plus at most 3 small new elements placed in empty cells; "new_board" when a fresh small drawing explains it better; "chat_only" when no drawing helps (a quick yes/no, off-topic, or unclear question).
+- mode: "annotate" to answer by marking up the current board (highlight, circle_around, pulse, callout, trace, arrows between existing ids) plus at most 3 small new elements placed in empty cells; "new_board" when a fresh small drawing explains it better; "chat_only" when no drawing helps (a quick yes/no, off-topic, or unclear question).
 - segments: the spoken answer, 1–3 segments with 15–70 words in total, with actions (empty for chat_only). In annotate mode you may target the ids listed above; give new elements new ids.
 - confidence: high, medium or low — how sure you are that the answer is correct.
 - new_lesson_topic: null, or a short topic if the question really deserves its own lesson.
