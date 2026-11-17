@@ -20,7 +20,7 @@ This document explains how a topic becomes a narrated, hand-drawn lesson, and wh
 sequenceDiagram
   participant U as Browser
   participant O as /api/lesson/outline
-  participant C as /api/lesson/chapter (×3)
+  participant C as /api/lesson/chapter ×3
   participant R as /api/lesson/recap
   participant V as /api/tts
   participant L as LLM
@@ -32,19 +32,19 @@ sequenceDiagram
   and plan
     O->>L: title, summary, 3 chapter plans
   end
-  O-->>U: {hook}  (NDJSON line)
-  U->>V: voice hook  → playback starts
-  O-->>U: {outline, agenda}  (agenda line built in code)
+  O-->>U: outline (as soon as the plan is ready)
+  O-->>U: intro: hook, then intro: agenda (agenda built in code)
+  U->>V: voice the hook → playback starts
   par each chapter, streamed
     U->>C: plan + chapter index
-    C->>L: chapter (stream)
-    C-->>U: {segment} … {segment} {done}
+    C->>L: chapter (streamed)
+    C-->>U: segment … segment, done
     U->>V: voice each segment as it arrives
   end
   U->>R: what each chapter actually said
   R->>L: recap + quiz + suggestions
   R-->>U: recap scene, quiz
-  V->>A: script (stream, PCM)
+  V->>A: script (streamed PCM)
   A-->>V: audio + transcript → verified, trimmed
 ```
 
@@ -136,7 +136,7 @@ stateDiagram-v2
 
 Time to first audio comes from four decisions:
 
-1. **Hook ∥ plan.** The first request makes two model calls in parallel: a tiny hook (one opening sentence and a hero drawing) and the plan. The hook is usually ready in about 4 s and is voiced immediately.
+1. **Hook ∥ plan, neither blocking the other.** The first request makes two model calls in parallel: a tiny hook (one opening sentence and a hero drawing) and the plan. Each is sent the moment it's ready: the plan (`{"outline"}`) lets the browser start all three chapters at once, and the hook (`{"intro"}`) is voiced immediately. Model latency varies a lot (a 440-token hook once took 16 s in production), so if the hook lags the plan by more than 2.5 s it is skipped and the lesson opens with the agenda line.
 2. **The agenda is code.** "Here's our plan. First, … Then, … And finally, …" is built from the chapter titles, so it costs no model call and can't disagree with the plan.
 3. **Chapters stream.** `streamStructured()` streams the model's JSON, and `ArrayItemExtractor` (`src/lib/lesson/stream-json.ts`) pulls out each segment object as soon as its closing brace arrives. It tracks strings and escapes, so braces inside text don't confuse it. Each segment is validated, repaired, signed and sent as an NDJSON line.
 4. **Voice in lesson order.** The client voices segments through a priority queue (4 in flight) ordered by position in the lesson, so a late-arriving chapter 1 still gets voiced before chapter 3.

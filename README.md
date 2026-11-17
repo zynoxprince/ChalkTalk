@@ -72,20 +72,20 @@ Keyboard: <kbd>Space</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> ±5 s · 
 flowchart LR
   subgraph Browser
     S[Lesson session] -->|segments + audio| T[Timeline compiler]
-    T --> P[Player\nWeb Audio clock]
-    P -->|time t| B[Board renderer\nframeAt t → SVG]
-    P --> C[Captions · transcript]
+    T --> P["Player<br/>Web Audio clock"]
+    P -->|time t| B["Board renderer<br/>frameAt(t) → SVG"]
+    P --> C["Captions · transcript"]
   end
-  subgraph API["Next.js API routes (Vercel)"]
-    O["/api/lesson/outline\nhook ∥ plan · NDJSON"]
-    CH["/api/lesson/chapter ×3\nstreamed segments"]
-    R["/api/lesson/recap\nrecap + quiz"]
-    A["/api/ask\nanswer with board context"]
-    V["/api/tts\nsigned narration → audio"]
+  subgraph API["Next.js API routes on Vercel"]
+    O["/api/lesson/outline<br/>hook ∥ plan, streamed"]
+    CH["/api/lesson/chapter ×3<br/>streamed segments"]
+    R["/api/lesson/recap<br/>recap + quiz"]
+    A["/api/ask<br/>answer with board context"]
+    V["/api/tts<br/>signed narration → audio"]
   end
   S --> O & CH & R & A & V
-  O & CH & R & A -->|strict JSON schema| L[(LLM via OpenRouter)]
-  V --> M[(Audio model via OpenRouter)]
+  O & CH & R & A -->|strict JSON schema| L[("LLM via OpenRouter")]
+  V --> M[("Audio model via OpenRouter")]
 ```
 
 **1. A board language, not coordinates.** The model writes a small "board script": narration split into one-to-two-sentence segments, each with drawing actions such as `{ kind: "flow", items: [...], at: {col, row, w, h}, cue: "two-step process" }`. It decides *what* to draw and *when* (the cue phrase); ChalkTalk decides *where* and *how*. The schema is enforced with structured outputs, then a repair pass makes every action sensible (speakable narration, valid ids and references, known icons, cues that really occur in the narration).
@@ -94,7 +94,7 @@ flowchart LR
 
 **3. The board is a function of time.** A timeline compiler turns segments + measured audio durations into absolute start times for every stroke. Within a segment, a cue's time is estimated from its position in the text, weighted for the pauses punctuation adds. The renderer is a pure function, `frameAt(timeline, t)`, evaluated every animation frame from the **audio hardware clock** (compensating for output latency). Pause, seek, restart, background tabs and Bluetooth delay can't drift out of sync because nothing runs on timers.
 
-**4. A fast start.** The first request makes two model calls in parallel: a tiny "hook" (the opening line and a hero drawing) that is voiced immediately, and the lesson plan. The agenda line is built from the plan in code. All three chapters are generated in parallel and **streamed**: each narration segment is validated, signed and sent to the browser the moment its JSON closes, so it can be voiced while the rest of the chapter is still being written. The player plays up to the "ready" edge and waits there only if it catches up. Locally, the tutor starts talking ~7 s after you click, with no pauses afterwards in our tests.
+**4. A fast start.** The first request makes two model calls in parallel: a tiny "hook" (the opening line and a hero drawing) and the lesson plan. Each is streamed to the browser the moment it's ready — the plan starts chapter generation immediately, the hook is voiced immediately — and neither waits for the other (a hook that lags the plan by more than 2.5 s is skipped). The agenda line is built from the plan in code. All three chapters are generated in parallel and **streamed**: each narration segment is validated, signed and sent to the browser the moment its JSON closes, so it can be voiced while the rest of the chapter is still being written. The player plays up to the "ready" edge and waits there only if it catches up. Locally, the tutor starts talking ~7 s after you click, with no pauses afterwards in our tests.
 
 **5. Voice you can trust.** The audio model is conversational, so ChalkTalk treats it like a strict TTS: it compares the model's transcript with the script, trims ad-libbed endings at the nearest pause, retries real mismatches and trims silence. The speech endpoint only voices text signed (HMAC) by the server that generated it, and responses are immutable and CDN-cacheable.
 
