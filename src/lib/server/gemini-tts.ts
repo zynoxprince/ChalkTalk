@@ -15,8 +15,10 @@ export interface PcmAudio {
   sampleRate: number;
 }
 
+type FoundAudio = { data: string; mime: string | null };
+
 /** Finds the base64 audio in an Interactions (or generateContent) response. */
-export function extractAudio(json: unknown): { data: string; mime: string | null } | null {
+export function extractAudio(json: unknown): FoundAudio | null {
   const j = json as {
     steps?: { type?: string; content?: { type?: string; data?: string; mime_type?: string }[] }[];
     output_audio?: { data?: string; mime_type?: string };
@@ -30,6 +32,26 @@ export function extractAudio(json: unknown): { data: string; mime: string | null
   if (j.output_audio?.data) return { data: j.output_audio.data, mime: j.output_audio.mime_type ?? null };
   const part = j.candidates?.[0]?.content?.parts?.find((p) => p.inlineData?.data);
   if (part?.inlineData?.data) return { data: part.inlineData.data, mime: part.inlineData.mimeType ?? null };
+  return findAudioDeep(json);
+}
+
+/** Last resort for response shapes we don't know: the last audio-typed base64 blob anywhere. */
+function findAudioDeep(node: unknown, depth = 0): FoundAudio | null {
+  if (!node || typeof node !== "object" || depth > 8) return null;
+  if (Array.isArray(node)) {
+    for (let i = node.length - 1; i >= 0; i--) {
+      const hit = findAudioDeep(node[i], depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  const o = node as Record<string, unknown>;
+  const mime = typeof o.mime_type === "string" ? o.mime_type : typeof o.mimeType === "string" ? o.mimeType : null;
+  if (typeof o.data === "string" && o.data.length > 100 && (o.type === "audio" || mime?.toLowerCase().startsWith("audio/"))) return { data: o.data, mime };
+  for (const value of Object.values(o).reverse()) {
+    const hit = findAudioDeep(value, depth + 1);
+    if (hit) return hit;
+  }
   return null;
 }
 
@@ -51,15 +73,25 @@ export function toPcm(bytes: Buffer, mime: string | null, fallbackRate = GEMINI_
   return { pcm: bytes, sampleRate: rateFromMime ? Number(rateFromMime) : fallbackRate };
 }
 
-export async function geminiSpeech(text: string, opts: { timeoutMs?: number } = {}): Promise<PcmAudio> {
+/** Longest one Gemini request may take. */
+const ATTEMPT_TIMEOUT_MS = 20_000;
+
+/**
+ * Voices `text`, retrying once on a server error or timeout. Gives up by
+ * `deadline` (epoch ms) so the caller still has time for the backup voice.
+ */
+export async function geminiSpeech(text: string, opts: { deadline?: number } = {}): Promise<PcmAudio> {
+  const deadline = opts.deadline ?? Date.now() + 30_000;
   let lastError: AIError | null = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining < 3_000) break;
     let res: Response;
     try {
       res = await fetch(ENDPOINT, {
         method: "POST",
         headers: { "x-goog-api-key": config.geminiKey, "Content-Type": "application/json" },
-        signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
+        signal: AbortSignal.timeout(Math.min(ATTEMPT_TIMEOUT_MS, remaining)),
         body: JSON.stringify({
           model: config.geminiTtsModel,
           input: [
@@ -79,7 +111,8 @@ export async function geminiSpeech(text: string, opts: { timeoutMs?: number } = 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       console.warn(`[tts:gemini] HTTP ${res.status}: ${body.slice(0, 300)}`);
-      const retryable = res.status === 429 || res.status >= 500;
+      // A 429 means a quota is used up; retrying right away won't help, so hand over to the backup voice.
+      const retryable = res.status >= 500;
       lastError = new AIError(`Gemini TTS returned ${res.status}.`, res.status === 429 ? 429 : 502, retryable);
       if (!retryable) break;
       await new Promise((r) => setTimeout(r, 700 * attempt));

@@ -125,4 +125,13 @@ describe("Gemini TTS audio parsing", () => {
     expect(extractAudio({ candidates: [{ content: { parts: [{ inlineData: { data: "Wlpa", mimeType: "audio/wav" } }] } }] })).toEqual({ data: "Wlpa", mime: "audio/wav" });
     expect(extractAudio({ steps: [] })).toBeNull();
   });
+
+  it("falls back to searching unknown response shapes for the audio blob", () => {
+    const blob = "A".repeat(200);
+    expect(extractAudio({ outputs: [{ type: "text", text: "hi" }, { type: "audio", data: blob, mime_type: "audio/l16;rate=24000" }] })).toEqual({ data: blob, mime: "audio/l16;rate=24000" });
+    expect(extractAudio({ candidates: [{ content: { parts: [{ inline_data: { mime_type: "audio/L16;codec=pcm;rate=24000", data: blob } }] } }] })).toEqual({ data: blob, mime: "audio/L16;codec=pcm;rate=24000" });
+    // Base64 that isn't marked as audio is never picked up.
+    expect(extractAudio({ outputs: [{ type: "image", data: blob, mime_type: "image/png" }] })).toBeNull();
+    expect(toPcm(Buffer.alloc(4), "audio/L16;codec=pcm;rate=24000").sampleRate).toBe(24000);
+  });
 });

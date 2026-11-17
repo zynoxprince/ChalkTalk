@@ -152,6 +152,7 @@ If Gemini fails (or no key is configured), the backup narrator is an audio-outpu
 - It is prompted as a voice actor reading a quoted script, and its **transcript is compared with the script** (normalised word edit distance).
 - If it read the script and kept talking, the audio is **cut at the quietest pause** near where the script ends, with a short fade. Real mismatches are retried (up to three attempts, keeping the closest).
 - Leading and trailing silence is trimmed, which keeps segment timing tight.
+- Each line has a **time budget** that fits the speech route's 60-second limit. Gemini gets up to 30 seconds (it is retried once after a server error or a timeout), and the backup voice gets the rest. A Gemini 429 (quota used up) is not retried: the backup voice takes over right away.
 - Only text **signed with HMAC** by the server that generated it can be voiced, so the endpoint is not a free TTS API. The signature covers the voice too, so the same URL always maps to the same voice and responses can be `immutable` and CDN-cached; audio from the backup voice is cached for only five minutes, so the primary voice takes over again once it recovers.
 - If the speech provider is unavailable, the client switches to a **browser-voice fallback** (`src/lib/player/narrator.ts`). Each voiceless line is spoken when its segment starts (from the current word after a seek), and the player holds the board at the segment boundary until the line finishes, so drawings never run ahead of the voice.
 
@@ -180,7 +181,8 @@ The answer is compiled as its own small timeline whose **base** is the paused bo
 | Model returns JSON that doesn't validate | Retried once with the validation errors; then repaired action by action |
 | A chapter fails to generate | Retried; if it still fails the lesson skips it and the chapter list offers "retry" |
 | A chapter stream breaks midway | Segments that already arrived are kept; the lesson continues |
-| A line can't be voiced | Up to two attempts; then the browser voice reads it (captions stay on) |
+| The Gemini voice fails for a line | The backup voice (OpenRouter) reads that line; its audio is cached for only five minutes |
+| A line can't be voiced at all | Up to two attempts; then the browser voice reads it (captions stay on) |
 | Speech provider unavailable | Detected once; remaining lines use the browser voice without further requests |
 | Playback catches up with generation | "The tutor is preparing the next part…"; resumes automatically |
 | Unsafe topic | Declined with a short explanation and a prompt to choose another topic |
