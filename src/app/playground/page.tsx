@@ -5,6 +5,8 @@ import { Board } from "@/components/board/Board";
 import { Captions } from "@/components/player/Captions";
 import { Controls } from "@/components/player/Controls";
 import { FIXTURE_SCENES } from "@/lib/lesson/fixture";
+import type { Scene } from "@/lib/lesson/schema";
+import type { SavedLesson } from "@/lib/lesson/saved";
 import { compileTimeline, estimateDuration, type AudioInfo } from "@/lib/board/timeline";
 import { frameAt } from "@/lib/board/state";
 import { LessonPlayer } from "@/lib/player/player";
@@ -17,10 +19,21 @@ const noopSubscribe = () => () => {};
  * (wall clock). Append ?t=12.5 to freeze a moment, handy for visual checks.
  */
 export default function Playground() {
+  const [scenes, setScenes] = useState<Scene[]>(FIXTURE_SCENES);
   const timeline = useMemo(() => {
     const audio = new Map<string, AudioInfo>();
-    for (const s of FIXTURE_SCENES) for (const g of s.segments) audio.set(g.id, { duration: estimateDuration(g.narration), ok: false });
-    return compileTimeline(FIXTURE_SCENES.map((scene) => ({ scene })), audio, { complete: true });
+    for (const s of scenes) for (const g of s.segments) audio.set(g.id, { duration: estimateDuration(g.narration), ok: false });
+    return compileTimeline(scenes.map((scene) => ({ scene })), audio, { complete: true });
+  }, [scenes]);
+
+  // ?sample=<slug> loads /samples/<slug>.json instead of the built-in lesson.
+  useEffect(() => {
+    const slug = new URLSearchParams(window.location.search).get("sample");
+    if (!slug) return;
+    fetch(`/samples/${encodeURIComponent(slug)}.json`)
+      .then((r) => r.json())
+      .then((l: SavedLesson) => setScenes(l.scenes))
+      .catch(() => {});
   }, []);
   const [player] = useState(() => new LessonPlayer({ ctx: null }));
   const [captions, setCaptions] = useState(true);
@@ -34,7 +47,7 @@ export default function Playground() {
   useEffect(() => {
     player.setTimeline(timeline);
     if (frozen !== null) player.seek(frozen);
-    // Only on mount: later seeks come from the controls.
+    // Re-run only when the lesson changes: later seeks come from the controls.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [player, timeline]);
 
@@ -46,7 +59,7 @@ export default function Playground() {
   const warnings = timeline.scenes.flatMap((s) => s.warnings);
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-4 sm:p-8">
+    <main className="mx-auto flex w-full max-w-6xl flex-col gap-4 p-4 sm:p-8" data-scene-ends={JSON.stringify(timeline.scenes.map((s) => +(s.contentEnd + 0.2).toFixed(2)))}>
       <header className="flex items-baseline justify-between">
         <h1 className="text-xl font-semibold">Engine playground</h1>
         <p className="text-sm text-ink/60">Hand-written lesson · no AI · silent clock</p>

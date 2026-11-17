@@ -93,10 +93,12 @@ export const ChapterPlanSchema = z.object({
   title: z.string(),
   goal: z.string(),
   visual_idea: z.string(),
+  misconception: z.string().nullable(),
 });
 export type ChapterPlan = z.infer<typeof ChapterPlanSchema>;
 
 export const OutlineSchema = z.object({
+  refusal: z.string().nullable(),
   title: z.string(),
   summary: z.string(),
   scope_note: z.string().nullable(),
