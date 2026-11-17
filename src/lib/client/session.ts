@@ -104,7 +104,7 @@ async function* readNdjson<T>(res: Response): AsyncGenerator<T> {
   if (buf.trim()) yield JSON.parse(buf) as T;
 }
 
-const SCENE_ESTIMATE = { chapter: 32, recap: 14 };
+const SCENE_ESTIMATE = { intro: 12, chapter: 32, recap: 14 };
 
 export class LessonSession {
   readonly player: LessonPlayer;
@@ -178,50 +178,70 @@ export class LessonSession {
     const { topic, level } = this.state;
     // The intro board is titled with the learner's own question.
     const introTitle = topic.charAt(0).toUpperCase() + topic.slice(1);
-    const intro = (segments: Segment[], status: SceneStatus): SessionScene => ({ scene: { id: "intro", kind: "intro", title: introTitle, segments }, status });
-    let hook: Segment | null = null;
+    let introSegments: Segment[] = [];
+    let introDone = false;
     let outline: Outline | null = null;
+    let chapters: Promise<void> | null = null;
+
+    const introScene = (): SessionScene => ({
+      scene: { id: "intro", kind: "intro", title: introTitle, segments: introSegments },
+      status: introDone ? "ready" : introSegments.length ? "streaming" : "pending",
+    });
+    const publish = () => {
+      const rest = this.state.scenes.slice(1);
+      this.set({ phase: "lesson", scenes: [introScene(), ...rest] });
+      this.recompile();
+    };
+
     try {
       const res = await openStream("/api/lesson/outline", { topic, level }, this.aborter.signal);
-      for await (const msg of readNdjson<{ hook?: Segment; outline?: Outline; agenda?: Segment; refusal?: string; error?: string }>(res)) {
+      for await (const msg of readNdjson<{ intro?: Segment; outline?: Outline; done?: boolean; refusal?: string; error?: string }>(res)) {
         if (msg.refusal) {
           this.set({ phase: "error", refusal: msg.refusal, error: msg.refusal });
           return;
         }
         if (msg.error) throw new ApiError(msg.error, 502);
-        if (msg.hook) {
-          // The opening line arrives first: start voicing it while the plan is written.
-          hook = msg.hook;
-          this.set({ phase: "lesson", scenes: [intro([hook], "streaming")] });
-          this.enqueue([hook]);
-          this.recompile();
-        }
-        if (msg.outline && msg.agenda) {
+        if (msg.outline) {
+          // The plan: lay out the chapter list and start writing all chapters now.
           outline = msg.outline;
           this.outline = outline;
           this.set({
-            phase: "lesson",
             title: outline.title,
             summary: outline.summary,
             scopeNote: outline.scope_note,
             clarify: outline.clarify,
             chapters: outline.chapters.map((c) => ({ title: c.title, goal: c.goal })),
             scenes: [
-              intro(hook ? [hook, msg.agenda] : [msg.agenda], "ready"),
+              introScene(),
               ...outline.chapters.map((c, i): SessionScene => ({ scene: { id: `c${i + 1}`, kind: "chapter", title: c.title, segments: [] }, status: "pending" })),
               { scene: { id: "recap", kind: "recap", title: "Recap", segments: [] }, status: "pending" },
             ],
           });
-          this.enqueue([msg.agenda]);
+          const plan = outline;
+          chapters = Promise.all(plan.chapters.map((_, i) => this.loadChapter(i))).then(() => undefined);
           this.recompile();
         }
+        if (msg.intro) {
+          // Intro lines, in order: voiced as soon as they arrive.
+          introSegments = [...introSegments, msg.intro];
+          this.enqueue([msg.intro]);
+          publish();
+        }
+        if (msg.done) {
+          introDone = true;
+          publish();
+        }
       }
-      if (!outline) throw new ApiError("The lesson plan could not be written. Please try again.", 502);
+      if (!outline || !chapters) throw new ApiError("The lesson plan could not be written. Please try again.", 502);
+      if (!introDone) {
+        introDone = true;
+        publish();
+      }
     } catch (e) {
       if ((e as Error).name !== "AbortError") this.set({ phase: "error", error: (e as Error).message });
       return;
     }
-    await Promise.all(outline.chapters.map((_, i) => this.loadChapter(i)));
+    await chapters;
     await this.loadRecap();
   }
 
@@ -402,7 +422,7 @@ export class LessonSession {
         scene: s.scene,
         pending: s.status === "pending",
         partial: s.status === "streaming",
-        estimatedDuration: s.scene.kind === "recap" ? SCENE_ESTIMATE.recap : SCENE_ESTIMATE.chapter,
+        estimatedDuration: s.scene.kind === "recap" ? SCENE_ESTIMATE.recap : s.scene.kind === "intro" ? SCENE_ESTIMATE.intro : SCENE_ESTIMATE.chapter,
       }));
     const timeline = compileTimeline(inputs, this.audio, { complete: this.complete() });
     this.player.setTimeline(timeline);
