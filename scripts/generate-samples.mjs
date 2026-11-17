@@ -41,9 +41,9 @@ async function* ndjson(res) {
 
 const post = (path, body) => fetch(BASE + path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
 
-function toMp3(pcm, out) {
+function toMp3(pcm, out, rate = 24000) {
   return new Promise((resolve, reject) => {
-    const ff = spawn("ffmpeg", ["-y", "-loglevel", "error", "-f", "s16le", "-ar", "24000", "-ac", "1", "-i", "pipe:0", "-codec:a", "libmp3lame", "-b:a", "48k", out]);
+    const ff = spawn("ffmpeg", ["-y", "-loglevel", "error", "-f", "s16le", "-ar", String(rate), "-ac", "1", "-i", "pipe:0", "-codec:a", "libmp3lame", "-b:a", "48k", out]);
     ff.on("error", reject);
     ff.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited ${code}`))));
     ff.stdin.end(pcm);
@@ -92,6 +92,7 @@ async function generate({ slug, topic, level, emoji }) {
   const segs = scenes.flatMap((s) => s.segments);
   let seconds = 0;
   let next = 0;
+  const voices = new Set();
   await Promise.all(
     Array.from({ length: 4 }, async () => {
       while (next < segs.length) {
@@ -100,8 +101,10 @@ async function generate({ slug, topic, level, emoji }) {
           const res = await fetch(`${BASE}/api/tts?t=${encodeURIComponent(seg.narration)}&s=${encodeURIComponent(seg.sig)}`);
           if (res.ok) {
             const pcm = Buffer.from(await res.arrayBuffer());
-            seconds += pcm.length / 48000;
-            await toMp3(pcm, join(dir, `${seg.id}.mp3`));
+            const rate = Number(res.headers.get("x-audio-format")?.match(/rate=(\d+)/)?.[1]) || 24000;
+            voices.add(res.headers.get("x-speech-provider") ?? "?");
+            seconds += pcm.length / 2 / rate;
+            await toMp3(pcm, join(dir, `${seg.id}.mp3`), rate);
             break;
           }
           if (attempt >= 3) throw new Error(`voice failed for ${seg.id}: ${res.status}`);
@@ -122,12 +125,12 @@ async function generate({ slug, topic, level, emoji }) {
     scenes,
     quiz: recap.quiz,
     suggestions: recap.suggestions,
-    models: { lesson: process.env.LESSON_MODEL ?? "google/gemini-4-hydrogen", voice: `${process.env.TTS_MODEL ?? "openai/gpt-audio-mini"} (${process.env.TTS_VOICE ?? "marin"})` },
+    models: { lesson: process.env.LESSON_MODEL ?? "google/gemini-4-hydrogen", voice: [...voices].join("+") },
     createdAt: new Date().toISOString(),
     audioBase: `/samples/${slug}`,
   };
   writeFileSync(join(ROOT, "public", "samples", `${slug}.json`), JSON.stringify(lesson));
-  console.log(`  ✓ ${segs.length} segments, ~${duration}s of lesson, generated in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  console.log(`  ✓ ${segs.length} segments, ~${duration}s of lesson, voice: ${[...voices].join("+")}, generated in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   return { slug, title: outline.title, topic, level, summary: outline.summary, duration, emoji };
 }
 

@@ -69,6 +69,12 @@ export async function postJson<T>(path: string, body: unknown, signal?: AbortSig
   return json as T;
 }
 
+/** Sample rate of a raw-PCM speech response (24 kHz unless the server says otherwise). */
+function sampleRateOf(res: Response): number {
+  const rate = Number(res.headers.get("x-audio-format")?.match(/rate=(\d+)/)?.[1]);
+  return rate >= 8000 && rate <= 96000 ? rate : 24000;
+}
+
 /** POSTs JSON and returns the response for streaming, with friendly errors. */
 async function openStream(path: string, body: unknown, signal: AbortSignal): Promise<Response> {
   let res: Response;
@@ -403,7 +409,7 @@ export class LessonSession {
       throw new ApiError(j.error ?? `Voice failed (${res.status})`, res.status);
     }
     const bytes = await res.arrayBuffer();
-    return this.audioBase ? await this.ctx.decodeAudioData(bytes) : pcm16ToBuffer(this.ctx, bytes);
+    return this.audioBase ? await this.ctx.decodeAudioData(bytes) : pcm16ToBuffer(this.ctx, bytes, sampleRateOf(res));
   }
 
   /* ------------------------------ timeline ------------------------------- */
@@ -487,7 +493,7 @@ export function playAnswer(scene: Scene, base: BoardElement[], ctx: AudioContext
         if (!ctx) throw new Error("no audio");
         const res = await fetch(`/api/tts?t=${encodeURIComponent(seg.narration)}&s=${encodeURIComponent(seg.sig)}`);
         if (!res.ok) throw new Error("voice failed");
-        const buffer = pcm16ToBuffer(ctx, await res.arrayBuffer());
+        const buffer = pcm16ToBuffer(ctx, await res.arrayBuffer(), sampleRateOf(res));
         audio.set(seg.id, { duration: buffer.duration, ok: true });
         player.setAudio(seg.id, buffer);
       } catch {

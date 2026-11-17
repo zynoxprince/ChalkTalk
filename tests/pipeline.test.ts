@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ArrayItemExtractor } from "@/lib/lesson/stream-json";
 import { cleanNarration, repairSegments } from "@/lib/lesson/repair";
 import { compareTranscript } from "@/lib/server/speech";
+import { extractAudio, toPcm } from "@/lib/server/gemini-tts";
 import { compileTimeline, type AudioInfo } from "@/lib/board/timeline";
 import { FIXTURE_SCENES } from "@/lib/lesson/fixture";
 import type { Action } from "@/lib/lesson/schema";
@@ -82,5 +83,46 @@ describe("streaming chapters in the timeline", () => {
     const seg = tl.segments.find((s) => s.id === partial.segments[0].id)!;
     expect(tl.readyUntil).toBeCloseTo(seg.end);
     expect(tl.complete).toBe(false);
+  });
+});
+
+describe("Gemini TTS audio parsing", () => {
+  const pcm = Buffer.from(Int16Array.from([0, 1000, -1000, 32767, -32768]).buffer);
+
+  function wav(data: Buffer, rate: number) {
+    const h = Buffer.alloc(44);
+    h.write("RIFF", 0, "ascii");
+    h.writeUInt32LE(36 + data.length, 4);
+    h.write("WAVE", 8, "ascii");
+    h.write("fmt ", 12, "ascii");
+    h.writeUInt32LE(16, 16);
+    h.writeUInt16LE(1, 20);
+    h.writeUInt16LE(1, 22);
+    h.writeUInt32LE(rate, 24);
+    h.writeUInt32LE(rate * 2, 28);
+    h.writeUInt16LE(2, 32);
+    h.writeUInt16LE(16, 34);
+    h.write("data", 36, "ascii");
+    h.writeUInt32LE(data.length, 40);
+    return Buffer.concat([h, data]);
+  }
+
+  it("strips a WAV header and reads its sample rate", () => {
+    const out = toPcm(wav(pcm, 16000), "audio/wav");
+    expect(out.sampleRate).toBe(16000);
+    expect(Buffer.compare(out.pcm, pcm)).toBe(0);
+  });
+
+  it("passes raw L16 through, taking the rate from the mime type", () => {
+    expect(toPcm(pcm, "audio/l16; rate=24000").sampleRate).toBe(24000);
+    expect(Buffer.compare(toPcm(pcm, null).pcm, pcm)).toBe(0);
+  });
+
+  it("finds audio in Interactions and generateContent responses", () => {
+    const interactions = { steps: [{ type: "user_input" }, { type: "model_output", content: [{ type: "audio", data: "QUJD", mime_type: "audio/l16" }] }] };
+    expect(extractAudio(interactions)).toEqual({ data: "QUJD", mime: "audio/l16" });
+    expect(extractAudio({ output_audio: { data: "WFla" } })).toEqual({ data: "WFla", mime: null });
+    expect(extractAudio({ candidates: [{ content: { parts: [{ inlineData: { data: "Wlpa", mimeType: "audio/wav" } }] } }] })).toEqual({ data: "Wlpa", mime: "audio/wav" });
+    expect(extractAudio({ steps: [] })).toBeNull();
   });
 });

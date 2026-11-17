@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { config } from "./env";
+import { config, voiceTag } from "./env";
 
 /**
  * Narration is signed by the server that generated it. The speech endpoint
@@ -7,7 +7,9 @@ import { config } from "./env";
  */
 
 export function signNarration(text: string): string {
-  return createHmac("sha256", config.signingSecret).update(`narration:v1\n${text}`).digest("base64url").slice(0, 32);
+  // The voice is part of the signed payload, so switching voices changes the URL
+  // and audio cached for one voice is never served for another.
+  return createHmac("sha256", config.signingSecret).update(`narration:v2\n${voiceTag()}\n${text}`).digest("base64url").slice(0, 32);
 }
 
 export function verifyNarration(text: string, sig: string): boolean {

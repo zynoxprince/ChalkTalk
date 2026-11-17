@@ -18,14 +18,16 @@ export const GET = handle(async (req) => {
   const wait = rateLimit(req, "tts", 900, 60 * 60 * 1000);
   if (wait) return tooMany(wait);
 
-  const { pcm, match, attempts } = await synthesize(text);
-  return new Response(new Uint8Array(pcm), {
+  const speech = await synthesize(text);
+  return new Response(new Uint8Array(speech.pcm), {
     headers: {
       "Content-Type": "application/octet-stream",
-      "X-Audio-Format": "pcm16le; rate=24000; channels=1",
-      "X-Speech-Match": match,
-      "X-Speech-Attempts": String(attempts),
-      "Cache-Control": "public, max-age=31536000, s-maxage=31536000, immutable",
+      "X-Audio-Format": `pcm16le; rate=${speech.sampleRate}; channels=1`,
+      "X-Speech-Provider": speech.provider,
+      "X-Speech-Match": speech.match,
+      "X-Speech-Attempts": String(speech.attempts),
+      // Backup-voice audio is cached briefly, so the primary voice takes over again once it recovers.
+      "Cache-Control": speech.fallback ? "public, max-age=300, s-maxage=300" : "public, max-age=31536000, s-maxage=31536000, immutable",
     },
   });
 });

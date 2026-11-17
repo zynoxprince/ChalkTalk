@@ -145,12 +145,14 @@ The recap and quiz are written from the chapters' actual narration (not just the
 
 ## 8. Voice
 
-The narrator is an audio-output chat model, which is conversational by nature, so `src/lib/server/tts.ts` makes it behave like a strict TTS:
+The primary narrator is **Gemini TTS** (`gemini-3.8-flash-tts` via the Gemini Interactions API, `src/lib/server/gemini-tts.ts`): a true text-to-speech model that reads the transcript verbatim, with the teacher's tone set through `speech_metadata.style`. It returns raw 16-bit PCM at 24 kHz — exactly what the player schedules — so no transcoding is needed.
+
+If Gemini fails (or no key is configured), the backup narrator is an audio-output chat model on OpenRouter. It is conversational by nature, so `src/lib/server/tts.ts` makes it behave like a strict TTS:
 
 - It is prompted as a voice actor reading a quoted script, and its **transcript is compared with the script** (normalised word edit distance).
 - If it read the script and kept talking, the audio is **cut at the quietest pause** near where the script ends, with a short fade. Real mismatches are retried (up to three attempts, keeping the closest).
 - Leading and trailing silence is trimmed, which keeps segment timing tight.
-- Only text **signed with HMAC** by the server that generated it can be voiced, so the endpoint is not a free TTS API. Because the same signed text always maps to the same audio, responses are `immutable` and cacheable by the CDN.
+- Only text **signed with HMAC** by the server that generated it can be voiced, so the endpoint is not a free TTS API. The signature covers the voice too, so the same URL always maps to the same voice and responses can be `immutable` and CDN-cached; audio from the backup voice is cached for only five minutes, so the primary voice takes over again once it recovers.
 - If the speech provider is unavailable, the client switches to a **browser-voice fallback** (`src/lib/player/narrator.ts`). Each voiceless line is spoken when its segment starts (from the current word after a seek), and the player holds the board at the segment boundary until the line finishes, so drawings never run ahead of the voice.
 
 ## 9. Tutor answers
