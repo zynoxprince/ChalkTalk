@@ -7,7 +7,7 @@ Type a topic, watch a two-minute lesson drawn and narrated just for you, and rai
 
 **[▶ Live demo](https://chalktalk-delta.vercel.app)** · [How it works](#how-it-works) · [Run it locally](#run-it-locally) · [Architecture notes](docs/ARCHITECTURE.md)
 
-<img src="docs/images/lesson.png" alt="A ChalkTalk lesson: a hand-drawn whiteboard with a narrated explanation, captions, playback controls and the tutor chat" width="900">
+<img src="docs/images/lesson.png" alt="A ChalkTalk lesson about the seasons: a hand-drawn whiteboard with the sun, two Earths on coloured spots, labelled arrows and a bar chart of daylight hours, with captions, playback controls and the tutor chat" width="900">
 
 </div>
 
@@ -31,6 +31,8 @@ It's built for self-directed learners (high-school and university students, and 
 - **~2-minute lessons**: a hook, three short chapters (one whiteboard each) and a recap — written live by an LLM.
 - **A real whiteboard**: hand-drawn, colour-hatched boxes and circles, sticky notes, ~200 line-art drawings, arrows, step-by-step flows, cycles, function plots, bar charts and key numbers, plus annotations (highlight, circle, underline, cross out, tick, callouts, pulse).
 - **A board that moves**: a gentle camera follows the pen and pulls back to show the whole board; packets flow along arrows so you see which way things go; things travel across the board (a water drop up to the leaf, energy from the sun); bars grow and numbers count up; things pop in and bump when the tutor points at them. Still a steady 60 fps, and calm with reduced motion.
+
+  <img src="docs/images/board-motion.gif" alt="The board in motion: a packet runs along an arrow, the camera pans to a bar chart whose bars grow while their values count up, then pulls back to show the whole board" width="640">
 - **Voice in sync with the board**: each drawing is tied to a cue phrase in the narration; captions highlight the words as they're spoken.
 - **Full playback control**: play, pause, resume, seek (chapter markers, keyboard, or click any line of the transcript), restart. Pausing mid-stroke freezes the stroke half-drawn — the board is exact at every moment.
 - **Raise your hand**: questions get a spoken answer drawn on top of the current board (or a fresh mini-board), with the lesson context and what's on the board at that moment. Click any element on the board to ask about it.
@@ -38,7 +40,7 @@ It's built for self-directed learners (high-school and university students, and 
 
 <table>
   <tr>
-    <td width="68%"><img src="docs/images/answer.png" alt="The learner clicked “Start: $100” on the board and asked about it; the tutor circles it, adds a callout and answers out loud and in the chat"><br><sub><b>Raise your hand:</b> click anything on the board and ask — the answer is drawn right on it.</sub></td>
+    <td width="68%"><img src="docs/images/answer.png" alt="The learner clicked “Year 3: $133.10” on the board and asked about it; the tutor highlights it, adds a callout “10% of $121 = $12.10” and answers out loud and in the chat"><br><sub><b>Raise your hand:</b> click anything on the board and ask — the answer is drawn right on it.</sub></td>
     <td width="32%"><img src="docs/images/mobile.png" alt="ChalkTalk on a phone: the board, captions, controls and the tutor panel stacked vertically"><br><sub><b>Phones too:</b> same lesson, stacked layout.</sub></td>
   </tr>
   <tr>
@@ -95,7 +97,7 @@ flowchart LR
 
 **3. The board is a function of time.** A timeline compiler turns segments + measured audio durations into absolute start times for every stroke. Within a segment, a cue's time is estimated from its position in the text, weighted for the pauses punctuation adds. The renderer is a pure function, `frameAt(timeline, t)`, evaluated every animation frame from the **audio hardware clock** (compensating for output latency). Pause, seek, restart, background tabs and Bluetooth delay can't drift out of sync because nothing runs on timers.
 
-**4. A fast start.** The first request makes two model calls in parallel: a tiny "hook" (the opening line and a hero drawing) and the lesson plan. Each is streamed to the browser the moment it's ready — the plan starts chapter generation immediately, the hook is voiced immediately — and neither waits for the other (a hook that lags the plan by more than 2.5 s is skipped). The agenda line is built from the plan in code. All three chapters are generated in parallel and **streamed**: each narration segment is validated, signed and sent to the browser the moment its JSON closes, so it can be voiced while the rest of the chapter is still being written. The player plays up to the "ready" edge and waits there only if it catches up. Locally, the tutor starts talking ~7 s after you click, with no pauses afterwards in our tests.
+**4. A fast start.** The first request makes two model calls in parallel: a tiny "hook" (the opening line and a hero drawing) and the lesson plan. Each is streamed to the browser the moment it's ready — the plan starts chapter generation immediately, the hook is voiced immediately — and neither waits for the other (a hook that lags the plan by more than 2.5 s is skipped). The agenda line is built from the plan in code. All three chapters are generated in parallel and **streamed**: each narration segment is validated, signed and sent to the browser the moment its JSON closes, so it can be voiced while the rest of the chapter is still being written. The player plays up to the "ready" edge and waits there only if it catches up. In production the tutor starts talking about 7 s after you click (6.5–7.3 s in our tests, Gemini voice included), with no pauses afterwards.
 
 **5. Voice you can trust.** The narrator is Gemini TTS (through OpenRouter's speech endpoint), a true text-to-speech model that reads the script verbatim. If it's unavailable, an audio chat model takes over; because that one is conversational, ChalkTalk compares its transcript with the script, trims ad-libbed endings at the nearest pause and retries real mismatches. If no server voice is available at all, the browser's own voice reads the lesson. The speech endpoint only voices text signed (HMAC) by the server that generated it — the signature includes the voice — and responses are immutable and CDN-cacheable.
 

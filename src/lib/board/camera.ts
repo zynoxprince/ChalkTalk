@@ -117,11 +117,12 @@ export function planCamera(elements: Focusable[], start: number, contentEnd: num
     const next = beats[i + 1]?.t0 ?? (final ? contentEnd : null);
     if (next !== null && next - beat.t1 > DRIFT + LEAD + MOVE_TIME) moveTo(beat.t1 + DRIFT, FULL_VIEW);
   });
-  // Show the whole board before it's erased: be back in full view as the last line ends
-  // (but give the last drawing a moment in focus first).
+  // Step back to the whole board as the last line finishes, so the learner sees
+  // the complete board for a moment before it's erased (but give the last
+  // drawing a moment in focus first).
   if (final) {
     const lastStart = beats.length ? beats[beats.length - 1].t0 : start;
-    moveTo(Math.max(lastStart + 0.8, contentEnd - MOVE_TIME + 0.1), FULL_VIEW);
+    moveTo(Math.max(lastStart + 0.8, contentEnd - MOVE_TIME - 0.6), FULL_VIEW);
   }
 
   const keys: CameraKey[] = [{ t: start, from: FULL_VIEW, to: FULL_VIEW }];
