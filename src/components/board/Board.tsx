@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo } from "react";
+import { useId, useMemo, useSyncExternalStore } from "react";
 import { BOARD_H, BOARD_W } from "@/lib/board/constants";
 import { frameAt, penPosition, type Frame } from "@/lib/board/state";
 import type { TimedElement, Timeline } from "@/lib/board/timeline";
@@ -27,10 +27,24 @@ interface BoardProps {
   children?: React.ReactNode;
 }
 
+const reducedMotionQuery = "(prefers-reduced-motion: reduce)";
+const subscribeReducedMotion = (cb: () => void) => {
+  const mq = window.matchMedia(reducedMotionQuery);
+  mq.addEventListener("change", cb);
+  return () => mq.removeEventListener("change", cb);
+};
+
+/** With reduced motion, elements appear fully drawn at their cue instead of animating. */
+function settle(frame: Frame | null, reduced: boolean): Frame | null {
+  if (!frame || !reduced) return frame;
+  return { ...frame, items: frame.items.filter((i) => !i.el.transient).map((i) => ({ ...i, p: 1 })), active: null, erase: 0 };
+}
+
 export function Board({ timeline, time, overlay, interactive = false, focusedId = null, onAsk, showPen = true, className, children }: BoardProps) {
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
-  const frame: Frame | null = useMemo(() => (timeline ? frameAt(timeline, time) : null), [timeline, time]);
-  const over: Frame | null = useMemo(() => (overlay ? frameAt(overlay.timeline, overlay.time) : null), [overlay]);
+  const reduced = useSyncExternalStore(subscribeReducedMotion, () => window.matchMedia(reducedMotionQuery).matches, () => false);
+  const frame: Frame | null = useMemo(() => settle(timeline ? frameAt(timeline, time) : null, reduced), [timeline, time, reduced]);
+  const over: Frame | null = useMemo(() => settle(overlay ? frameAt(overlay.timeline, overlay.time) : null, reduced), [overlay, reduced]);
   // While an answer is drawn over a paused board, only the answer's pen moves.
   const pen = showPen ? penPosition(over ? over.active : (frame?.active ?? null)) : null;
   const label = frame?.scene ? `Whiteboard: ${frame.scene.title}` : "Whiteboard";

@@ -149,3 +149,70 @@ describe("LessonPlayer", () => {
     expect(ctx.nodes.length).toBe(0);
   });
 });
+
+describe("fallback narrator", () => {
+  class FakeNarrator {
+    said: { id: string; text: string }[] = [];
+    talking: string | null = null;
+    speak(id: string, text: string) {
+      this.said.push({ id, text });
+      this.talking = id;
+    }
+    isSpeaking(id: string) {
+      return this.talking === id;
+    }
+    cancel() {
+      this.talking = null;
+    }
+  }
+
+  function silentSetup() {
+    let wall = 0;
+    const audio = new Map<string, AudioInfo>();
+    FIXTURE_SCENES.forEach((s) => s.segments.forEach((g) => audio.set(g.id, { duration: 4, ok: false })));
+    const tl = compileTimeline(FIXTURE_SCENES.map((scene) => ({ scene })), audio, { complete: true });
+    const narrator = new FakeNarrator();
+    const player = new LessonPlayer({ ctx: null, now: () => wall, narrator });
+    player.setTimeline(tl);
+    return { tl, player, narrator, advance: (s: number) => (wall += s) };
+  }
+
+  it("reads each voiceless line when its segment starts", () => {
+    const { tl, player, narrator, advance } = silentSetup();
+    player.play();
+    advance(tl.segments[0].start + 0.1);
+    player.tick();
+    expect(narrator.said[0]).toEqual({ id: tl.segments[0].id, text: tl.segments[0].narration });
+  });
+
+  it("holds the board at the end of a line until the voice finishes", () => {
+    const { tl, player, narrator, advance } = silentSetup();
+    const seg = tl.segments[0];
+    player.play();
+    advance(seg.start + 0.1);
+    player.tick();
+    advance(seg.end - seg.start + 1.5); // the voice is slower than estimated
+    player.tick();
+    expect(player.time()).toBeLessThanOrEqual(seg.end);
+    narrator.talking = null; // line finished
+    player.tick();
+    advance(0.5);
+    player.tick();
+    expect(player.time()).toBeGreaterThan(seg.end);
+  });
+
+  it("stops talking on pause and resumes mid-line from the current word", () => {
+    const { tl, player, narrator, advance } = silentSetup();
+    const seg = tl.segments[1];
+    player.seek(seg.start + (seg.end - seg.start) * 0.6);
+    player.play();
+    player.tick();
+    const resumed = narrator.said.at(-1)!;
+    expect(resumed.id).toBe(seg.id);
+    expect(resumed.text.length).toBeLessThan(seg.narration.length);
+    expect(seg.narration.endsWith(resumed.text)).toBe(true);
+    player.pause();
+    expect(narrator.talking).toBeNull();
+    advance(1);
+  });
+});

@@ -105,7 +105,7 @@ export function LessonView({ session, onHome, onNewLesson }: { session: LessonSe
       setMessages((m) => m.map((x) => (x.id === id ? { id, role: "answer", status: "done", text: res.reply, confidence: res.confidence, newLessonTopic: res.newLessonTopic } : x)));
       if (res.scene && res.scene.segments.length) {
         const fresh = res.mode === "new_board";
-        const playback = playAnswer(res.scene, fresh ? [] : session.boardAt(t), session.audioContext, setAnswerTl);
+        const playback = playAnswer(res.scene, fresh ? [] : session.boardAt(t), session.audioContext, setAnswerTl, session.fallbackNarrator);
         setAnswer({ playback, resumeAt: t, question: text, fresh });
         setAnswerTl(playback.timeline);
         playback.player.play();

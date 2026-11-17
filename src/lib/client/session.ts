@@ -6,6 +6,7 @@ import type { Level, Outline, QuizItem, Scene, Segment } from "@/lib/lesson/sche
 import type { SavedLesson } from "@/lib/lesson/saved";
 import { pcm16ToBuffer, unlockAudio } from "@/lib/player/audio";
 import { LessonPlayer } from "@/lib/player/player";
+import { BrowserNarrator } from "@/lib/player/narrator";
 
 /**
  * Orchestrates one lesson in the browser:
@@ -119,12 +120,16 @@ export class LessonSession {
   private audioBase: string | null = null;
   private disposed = false;
   private autoplay = false;
+  /** The speech provider said it's unavailable: stop asking, use the browser voice. */
+  private ttsDown = false;
+  private narrator: BrowserNarrator | null;
   state: SessionState;
 
   constructor(opts: { topic: string; level: Level; ctx: AudioContext | null; source?: "live" | "sample"; autoplay?: boolean }) {
     this.ctx = opts.ctx;
     this.autoplay = !!opts.autoplay;
-    this.player = new LessonPlayer({ ctx: opts.ctx });
+    this.narrator = BrowserNarrator.create();
+    this.player = new LessonPlayer({ ctx: opts.ctx, narrator: this.narrator });
     this.state = {
       phase: "planning",
       error: null,
@@ -348,7 +353,7 @@ export class LessonSession {
 
   private async voice(seg: Segment) {
     let ok = false;
-    if (this.ctx) {
+    if (this.ctx && !this.ttsDown) {
       for (let attempt = 1; attempt <= 2 && !ok && !this.disposed; attempt++) {
         try {
           const buffer = await this.fetchAudio(seg);
@@ -358,6 +363,7 @@ export class LessonSession {
           ok = true;
         } catch (e) {
           if ((e as Error).name === "AbortError") return;
+          if (e instanceof ApiError && e.status === 503) this.ttsDown = true;
           if (e instanceof ApiError && (e.status === 403 || e.status === 400 || e.status === 503)) break;
         }
       }
@@ -428,7 +434,12 @@ export class LessonSession {
 
   /** Call from a click/tap: browsers only allow sound after a user gesture. */
   async unlock() {
+    this.narrator?.prime();
     await unlockAudio(this.ctx);
+  }
+
+  get fallbackNarrator() {
+    return this.narrator;
   }
 }
 
@@ -443,8 +454,8 @@ export interface AnswerPlayback {
 }
 
 /** Voices an answer scene and builds its own small timeline drawn over `base`. */
-export function playAnswer(scene: Scene, base: BoardElement[], ctx: AudioContext | null, onUpdate: (tl: Timeline) => void): AnswerPlayback {
-  const player = new LessonPlayer({ ctx });
+export function playAnswer(scene: Scene, base: BoardElement[], ctx: AudioContext | null, onUpdate: (tl: Timeline) => void, narrator: BrowserNarrator | null = null): AnswerPlayback {
+  const player = new LessonPlayer({ ctx, narrator });
   const audio = new Map<string, AudioInfo>();
   const inputs: SceneInput[] = [{ scene, base, showTitle: base.length === 0 }];
   let timeline = compileTimeline(inputs, audio, { complete: false });

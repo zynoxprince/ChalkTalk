@@ -298,7 +298,7 @@ function LessonCard(p: PanelData) {
         )}
         {s.degraded && (
           <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-amber-700">
-            <Icon name="captions" className="size-3.5" /> Some narration couldn&apos;t be voiced — captions are on for those parts.
+            <Icon name="captions" className="size-3.5" /> The AI voice is unavailable right now, so your browser&apos;s voice reads some lines (captions are on).
           </p>
         )}
       </div>

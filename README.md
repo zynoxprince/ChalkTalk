@@ -1,13 +1,213 @@
+<div align="center">
+
 # ChalkTalk
 
-Learn anything on a whiteboard. ChalkTalk turns any topic into a short, narrated, hand-drawn lesson that you can pause, rewind, and interrupt with questions.
+**Learn anything on a whiteboard.**
+Type a topic, watch a two-minute lesson drawn and narrated just for you, and raise your hand at any moment — the tutor answers out loud, on the same board.
 
-> Work in progress — full documentation is coming soon.
+**[▶ Live demo](https://chalktalk-delta.vercel.app)** · [How it works](#how-it-works) · [Run it locally](#run-it-locally) · [Architecture notes](docs/ARCHITECTURE.md)
 
-## Development
+<img src="docs/images/lesson.png" alt="A ChalkTalk lesson: a hand-drawn whiteboard with a narrated explanation, captions, playback controls and the tutor chat" width="900">
+
+</div>
+
+---
+
+## Why
+
+When you hit a concept you don't get — photosynthesis, binary search, compound interest — the best explanation is usually a teacher at a whiteboard: short, spoken, drawn step by step. Chatbots answer with walls of text. Videos are visual, but they can't answer *your* question at the moment you get lost, and there may be no video for your exact topic and level.
+
+ChalkTalk combines the three things a great teacher does:
+
+1. **Explains while drawing** — narration and drawings are generated together, and every stroke starts on the word that introduces it.
+2. **Can be interrupted** — pause anywhere, point at anything on the board, and ask. The tutor answers by annotating the board you're looking at, then picks up where it stopped.
+3. **Checks understanding** — a three-question quiz at the end; wrong answers link straight back to the part that explains it.
+
+It's built for self-directed learners (high-school and university students, and curious adults) and works best for conceptual "how / why" topics.
+
+## Features
+
+- **Chat-first**: type any topic, pick Beginner / Intermediate / Advanced, or open a ready-made lesson that starts instantly.
+- **~2-minute lessons**: a hook, three short chapters (one whiteboard each) and a recap — written live by an LLM.
+- **A real whiteboard**: hand-drawn boxes, circles, sticky notes, ~200 line-art drawings, arrows, step-by-step flows, cycles and function plots, plus annotations (highlight, circle, underline, cross out, tick, callouts) and demonstrations (a dot tracing a process, curves drawn as they're plotted).
+- **Voice in sync with the board**: each drawing is tied to a cue phrase in the narration; captions highlight the words as they're spoken.
+- **Full playback control**: play, pause, resume, seek (chapter markers, keyboard, or click any line of the transcript), restart. Pausing mid-stroke freezes the stroke half-drawn — the board is exact at every moment.
+- **Raise your hand**: questions get a spoken answer drawn on top of the current board (or a fresh mini-board), with the lesson context and what's on the board at that moment. Click any element on the board to ask about it.
+- **Honest AI**: live vs. pre-generated content is labelled, low-confidence answers say so, and unsafe topics are declined politely.
+
+## A two-minute tour
+
+1. Open the [demo](https://chalktalk-delta.vercel.app) and click a **ready-made lesson** — it starts instantly.
+2. Drag the seek bar (or press <kbd>←</kbd>/<kbd>→</kbd>), pause in the middle of a drawing, open the **Transcript** tab and click a sentence.
+3. Click something on the board (e.g. a label) and send the suggested question — watch the answer appear on the board, then press **Back to the lesson**.
+4. Go back and type your own topic — the tutor starts talking within a few seconds while the rest of the lesson is still being written.
+5. At the end, take the quiz.
+
+Keyboard: <kbd>Space</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> ±5 s · <kbd>/</kbd> ask · <kbd>C</kbd> captions · <kbd>R</kbd> restart · <kbd>Esc</kbd> back to the lesson.
+
+## What's live and what isn't
+
+| Part | How it's produced |
+| --- | --- |
+| Lesson plan, narration, drawings, recap, quiz | **Live** — generated per request by an LLM (default `google/gemini-4-hydrogen` via OpenRouter) |
+| Narration audio | **Live** — synthesised per line by an audio model (default `openai/gpt-audio-mini`, voice `marin`) |
+| Answers to your questions | **Live** — generated with the lesson and the current board as context, then voiced |
+| The whiteboard drawing | Rendered by ChalkTalk's own engine from the model's board instructions (deterministic code, not images) |
+| "Ready-made lessons" on the home page | **Pre-generated** with exactly the same pipeline and stored as static JSON + MP3 files, so they start instantly and work even if the AI service is down. They're labelled "Sample lesson". |
+| Captions-only playback | Fallback when a line can't be voiced; the lesson continues with captions |
+
+## How it works
+
+```mermaid
+flowchart LR
+  subgraph Browser
+    S[Lesson session] -->|segments + audio| T[Timeline compiler]
+    T --> P[Player\nWeb Audio clock]
+    P -->|time t| B[Board renderer\nframeAt t → SVG]
+    P --> C[Captions · transcript]
+  end
+  subgraph API["Next.js API routes (Vercel)"]
+    O["/api/lesson/outline\nhook ∥ plan · NDJSON"]
+    CH["/api/lesson/chapter ×3\nstreamed segments"]
+    R["/api/lesson/recap\nrecap + quiz"]
+    A["/api/ask\nanswer with board context"]
+    V["/api/tts\nsigned narration → audio"]
+  end
+  S --> O & CH & R & A & V
+  O & CH & R & A -->|strict JSON schema| L[(LLM via OpenRouter)]
+  V --> M[(Audio model via OpenRouter)]
+```
+
+**1. A board language, not coordinates.** The model writes a small "board script": narration split into one-to-two-sentence segments, each with drawing actions such as `{ kind: "flow", items: [...], at: {col, row, w, h}, cue: "two-step process" }`. It decides *what* to draw and *when* (the cue phrase); ChalkTalk decides *where* and *how*. The schema is enforced with structured outputs, then a repair pass makes every action sensible (speakable narration, valid ids and references, known icons, cues that really occur in the narration).
+
+**2. A layout engine.** Elements are placed on a 12 × 6 grid under the title. Overlaps are resolved by moving elements to the nearest free cells, text is fitted with font metrics measured from the handwriting font, arrows attach to facing edges, and composites (lists, flows, cycles, plots) are laid out by code. Strokes are generated with rough.js using a fixed seed per element, so the sketchy look never "boils" between frames.
+
+**3. The board is a function of time.** A timeline compiler turns segments + measured audio durations into absolute start times for every stroke. Within a segment, a cue's time is estimated from its position in the text, weighted for the pauses punctuation adds. The renderer is a pure function, `frameAt(timeline, t)`, evaluated every animation frame from the **audio hardware clock** (compensating for output latency). Pause, seek, restart, background tabs and Bluetooth delay can't drift out of sync because nothing runs on timers.
+
+**4. A fast start.** The first request makes two model calls in parallel: a tiny "hook" (the opening line and a hero drawing) that is voiced immediately, and the lesson plan. The agenda line is built from the plan in code. All three chapters are generated in parallel and **streamed**: each narration segment is validated, signed and sent to the browser the moment its JSON closes, so it can be voiced while the rest of the chapter is still being written. The player plays up to the "ready" edge and waits there only if it catches up. Locally, the tutor starts talking ~7 s after you click, with no pauses afterwards in our tests.
+
+**5. Voice you can trust.** The audio model is conversational, so ChalkTalk treats it like a strict TTS: it compares the model's transcript with the script, trims ad-libbed endings at the nearest pause, retries real mismatches and trims silence. The speech endpoint only voices text signed (HMAC) by the server that generated it, and responses are immutable and CDN-cacheable.
+
+**6. Answers on the board.** A question pauses the lesson and is sent with the lesson plan, what was just said, the elements currently on the board (ids and labels), the element you pointed at, and the recent conversation. The tutor chooses to annotate the current board, draw a fresh mini-board, or reply in chat — and its answer plays as a small timeline layered over the frozen board.
+
+More detail, including the data model and the player state machine: **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
+
+## Learning design
+
+The core interactions follow well-established multimedia-learning principles (Mayer):
+
+| Principle | In ChalkTalk |
+| --- | --- |
+| Temporal contiguity — show visuals while they're described | Every drawing starts on its cue phrase |
+| Signalling — point at what matters | Highlights, circles, underlines and callouts at the moment of mention |
+| Segmenting — learner-paced chunks | Three short chapters, pause/seek anywhere, chapter markers |
+| Modality — explain in speech, not paragraphs | Narration carries the explanation; board labels are ≤ 5 words |
+| Coherence — cut the clutter | One idea per board, 4–9 elements |
+| Retrieval practice | End-of-lesson quiz with "rewatch this part" links |
+
+Each lesson also tackles the topic's most common **misconception** explicitly: the wrong idea is drawn, crossed out, and replaced by the right one.
+
+## Tech stack
+
+- **Next.js 16** (App Router, route handlers, streaming responses) · **React 19** · **TypeScript** · **Tailwind CSS 4**
+- **zod** for the board-script schema, validation and JSON-Schema export for structured outputs
+- **rough.js** (hand-drawn strokes), **Lucide** (line-art drawings), **Caveat** (handwriting font)
+- **Web Audio API** for sample-accurate, gapless narration and the master clock
+- **OpenRouter** for both models (any OpenRouter model id can be configured)
+- **Vitest** for the engine, player and pipeline tests · deployed on **Vercel**
+
+## Run it locally
+
+Requirements: Node.js 20+, pnpm, and an [OpenRouter API key](https://openrouter.ai/keys).
 
 ```bash
+git clone https://github.com/zynoxprince/AI-Whiteboard-Tutor.git
+cd AI-Whiteboard-Tutor
 pnpm install
-cp .env.example .env.local   # add your OpenRouter API key
-pnpm dev
+cp .env.example .env.local      # then put your OpenRouter key in OPENROUTER_API_KEY
+openssl rand -hex 32            # paste the output into SIGNING_SECRET
+pnpm dev                        # http://localhost:3000
 ```
+
+Other scripts:
+
+| Command | What it does |
+| --- | --- |
+| `pnpm test` | Unit tests (layout, timing, `frameAt`, player state machine, streaming parser, repair, speech checks) |
+| `pnpm lint` / `pnpm typecheck` | ESLint and TypeScript |
+| `pnpm build` | Production build |
+| `node scripts/generate-samples.mjs [slug]` | Regenerates the ready-made lessons through a running dev server (needs `ffmpeg`) |
+| `node scripts/gen-icons.mjs` | Regenerates the curated icon set the model may draw |
+
+Visit **`/playground`** to see the whiteboard engine play a hand-written lesson with no AI at all (append `?t=12.5` to freeze a moment, or `?sample=seasons` to inspect a sample's boards).
+
+### Configuration
+
+| Variable | Required | Default | Purpose |
+| --- | --- | --- | --- |
+| `OPENROUTER_API_KEY` | yes | — | Key for all model calls (server-side only) |
+| `SIGNING_SECRET` | yes | — | Random string used to sign narration for the speech endpoint |
+| `LESSON_MODEL` | no | `google/gemini-4-hydrogen` | Writes plans, chapters, recaps and quizzes |
+| `TUTOR_MODEL` | no | `LESSON_MODEL` | Answers questions |
+| `LESSON_REASONING` / `TUTOR_REASONING` | no | `minimal` | Reasoning effort; lower is faster |
+| `TTS_MODEL` | no | `openai/gpt-audio-mini` | Audio model used as the narrator |
+| `TTS_VOICE` | no | `marin` | Narrator voice |
+
+The models must support structured outputs (lessons) and audio output (voice) on OpenRouter.
+
+## Project structure
+
+```
+src/
+  app/                    Next.js routes: the app, /playground, and /api/*
+  components/
+    app/                  Landing, lesson view, board stage, side panel, quiz
+    board/                SVG whiteboard renderer
+    player/               Controls (seek bar with chapters) and captions
+  lib/
+    board/                Engine: layout, text metrics, rough strokes, icons, plots, timeline, frameAt
+    player/               Playback state machine (Web Audio clock) and audio helpers
+    lesson/               Board-script schema, prompts, generation, repair, streaming JSON parser
+    client/               Browser-side lesson session (streams, voice queue, timeline updates)
+    server/               OpenRouter client, speech verification, signing, rate limits
+scripts/                  Sample-lesson and icon generators
+public/samples/           Pre-generated lessons (JSON + MP3)
+tests/                    Vitest suites
+```
+
+## Privacy and safety
+
+- No accounts and no stored personal data. Topics and questions are sent to the AI provider to generate the lesson.
+- API keys live only in server environment variables; the browser never sees them.
+- The speech endpoint only voices server-signed narration; all endpoints validate input sizes and are rate-limited per client.
+- Model output is rendered as data, never as HTML: text is escaped, icons come from an allowlist, and plots use a small safe expression parser (no `eval`).
+- Harmful topics are declined with a short explanation.
+
+## Accessibility
+
+Keyboard shortcuts for every control, a proper ARIA slider for seeking, visible focus states, captions on by default, a full clickable transcript as a text alternative to the board, and `prefers-reduced-motion` support in the interface.
+
+## Known limitations
+
+- **Timing inside a line is estimated.** Segment boundaries are exact (measured audio), but a cue's position inside a sentence is estimated from the text (typically within a few tenths of a second). Word-level timestamps would make it exact.
+- **The narrator is a conversational audio model.** Transcript checks catch ad-libs, but pronunciation and tone can vary slightly from line to line.
+- **AI can be wrong.** Lessons are not fact-checked against sources; low-confidence answers are flagged, but treat lessons as explanations, not references.
+- **Crowded boards happen occasionally.** The layout engine prevents overlapping elements, but arrows can still cross other things on busy boards.
+- **Live lessons aren't saved or shareable yet**, and rate limits are in-memory per server instance.
+- English-first: the handwriting font covers Latin scripts; other scripts fall back to system fonts.
+
+## Roadmap
+
+- Word-level alignment for exact cue timing
+- Save and share lessons; "explain it differently" for a single chapter
+- A "your turn" mode: the learner sketches on the board and a vision model gives feedback
+- Playback speed (time-stretching), more voices and languages
+- Spaced-repetition review of quiz questions
+
+## License
+
+[MIT](LICENSE)
+
+## Acknowledgements
+
+[rough.js](https://roughjs.com/) (MIT) for the hand-drawn strokes, [Lucide](https://lucide.dev/) (ISC) for the line-art drawings, [Caveat](https://fonts.google.com/specimen/Caveat) (SIL OFL) for the handwriting, and [OpenRouter](https://openrouter.ai/) for model access. This project was built with the help of AI coding tools.

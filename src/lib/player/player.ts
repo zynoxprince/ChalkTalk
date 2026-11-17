@@ -1,4 +1,5 @@
 import type { Timeline } from "@/lib/board/timeline";
+import type { Narrator } from "./narrator";
 
 /**
  * Lesson playback state machine. The board never runs on timers: it reads
@@ -36,6 +37,8 @@ export interface PlayerOptions {
   ctx: AudioOut | null;
   /** Wall clock in seconds, used when no audio context is running. */
   now?: () => number;
+  /** Speaks lines that have no audio (e.g. the browser's own voice). */
+  narrator?: Narrator | null;
 }
 
 interface Scheduled {
@@ -56,10 +59,15 @@ export class LessonPlayer {
   private wall: () => number;
   private usingAudioClock = false;
   private volume = 1;
+  private narrator: Narrator | null;
+  /** Segment the fallback narrator was asked to speak (null = none since the last jump). */
+  private spoken: string | null = null;
+  private holdSince = 0;
 
   constructor(opts: PlayerOptions) {
     this.ctx = opts.ctx;
     this.wall = opts.now ?? (() => performance.now() / 1000);
+    this.narrator = opts.narrator ?? null;
   }
 
   /* ------------------------------ clock ------------------------------ */
@@ -181,6 +189,7 @@ export class LessonPlayer {
   /** Call every animation frame while mounted: detects buffering and the end. */
   tick() {
     if (!this.tl) return;
+    if (this._state === "playing") this.narrate();
     if (this._state === "playing") {
       const t = this.time();
       if (t >= this.duration - 0.01 && this.tl.complete) {
@@ -199,6 +208,39 @@ export class LessonPlayer {
   dispose() {
     this.stopAll();
     this.listeners.clear();
+  }
+
+  /**
+   * Lines without audio are read by the fallback narrator. Each starts in
+   * sync with its segment, and the clock holds at the segment's end until the
+   * line finishes, so drawings never run ahead of the voice.
+   */
+  private narrate() {
+    if (!this.narrator || !this.tl) return;
+    const t = this.time();
+    const segs = this.tl.segments;
+    const spoken = this.spoken ? segs.find((s) => s.id === this.spoken) : null;
+    if (spoken && t >= spoken.end - 0.02 && this.narrator.isSpeaking(spoken.id)) {
+      const now = this.wall();
+      if (!this.holdSince) this.holdSince = now;
+      if (now - this.holdSince < 8) {
+        this.anchorT = spoken.end - 0.02;
+        this.anchorClock = this.clock();
+        return;
+      }
+      this.narrator.cancel();
+    }
+    this.holdSince = 0;
+    const seg = segs.find((s) => s.start <= t && t < s.end);
+    if (seg && seg.status === "silent" && this.spoken !== seg.id) {
+      let from = 0;
+      seg.words.forEach((w, i) => {
+        if (w.start <= t - 0.15) from = i;
+      });
+      if (t - seg.start < 0.4) from = 0;
+      this.narrator.speak(seg.id, seg.words.slice(from).map((w) => w.text).join(" "));
+      this.spoken = seg.id;
+    }
   }
 
   /* --------------------------- subscription -------------------------- */
@@ -274,5 +316,10 @@ export class LessonPlayer {
 
   private stopAll() {
     for (const id of [...this.scheduled.keys()]) this.stopSource(id);
+    if (this.spoken) {
+      this.narrator?.cancel();
+      this.spoken = null;
+      this.holdSince = 0;
+    }
   }
 }
