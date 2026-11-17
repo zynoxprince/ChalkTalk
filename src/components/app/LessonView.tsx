@@ -193,7 +193,7 @@ export function LessonView({ session, onHome, onNewLesson }: { session: LessonSe
   ];
 
   return (
-    <div className="mx-auto flex h-dvh w-full max-w-[1500px] flex-col gap-3 p-3 sm:p-4 lg:gap-4">
+    <div className="mx-auto flex min-h-dvh w-full max-w-[1500px] flex-col gap-3 p-3 sm:p-4 lg:h-dvh lg:gap-4">
       <header className="flex shrink-0 items-center gap-3">
         <button type="button" onClick={onHome} className="shrink-0 rounded-lg focus-visible:outline-2 focus-visible:outline-accent" aria-label="ChalkTalk home">
           <Logo />
@@ -213,8 +213,8 @@ export function LessonView({ session, onHome, onNewLesson }: { session: LessonSe
       {s.phase === "error" ? (
         <ErrorCard state={s} onHome={onHome} onRetry={() => onNewLesson(s.topic)} />
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(0,1fr)_380px] lg:gap-4">
-          <section className="flex min-h-0 flex-col gap-2 lg:overflow-y-auto" aria-label="Lesson">
+        <div className="grid grid-cols-1 gap-3 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,1fr)_380px] lg:gap-4">
+          <section className="flex flex-col gap-2 lg:min-h-0 lg:overflow-y-auto" aria-label="Lesson">
             <BoardStage
               mode={mode}
               timeline={tl}

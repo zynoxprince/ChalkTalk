@@ -38,7 +38,7 @@ interface SidePanelProps {
 export function SidePanel(p: SidePanelProps) {
   const [tab, setTab] = useState<"tutor" | "transcript">("tutor");
   return (
-    <aside className="flex min-h-[28rem] flex-col overflow-hidden rounded-2xl border border-black/10 bg-white/80 shadow-sm lg:h-full lg:min-h-0">
+    <aside className="flex h-[34rem] flex-col overflow-hidden rounded-2xl border border-black/10 bg-white/80 shadow-sm lg:h-full lg:min-h-0">
       <div className="flex shrink-0 gap-1 border-b border-black/5 p-1.5" role="tablist" aria-label="Side panel">
         {(["tutor", "transcript"] as const).map((t) => (
           <button

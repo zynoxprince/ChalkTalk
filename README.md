@@ -35,6 +35,16 @@ It's built for self-directed learners (high-school and university students, and 
 - **Raise your hand**: questions get a spoken answer drawn on top of the current board (or a fresh mini-board), with the lesson context and what's on the board at that moment. Click any element on the board to ask about it.
 - **Honest AI**: live vs. pre-generated content is labelled, low-confidence answers say so, and unsafe topics are declined politely.
 
+<table>
+  <tr>
+    <td width="68%"><img src="docs/images/answer.png" alt="The learner clicked “Start: $100” on the board and asked about it; the tutor circles it, adds a callout and answers out loud and in the chat"><br><sub><b>Raise your hand:</b> click anything on the board and ask — the answer is drawn right on it.</sub></td>
+    <td width="32%"><img src="docs/images/mobile.png" alt="ChalkTalk on a phone: the board, captions, controls and the tutor panel stacked vertically"><br><sub><b>Phones too:</b> same lesson, stacked layout.</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/images/landing.png" alt="The ChalkTalk home page: a topic box, level chips, topic ideas and ready-made lessons"><br><sub><b>Chat-first:</b> type a topic and pick a level, or start a ready-made lesson instantly.</sub></td>
+  </tr>
+</table>
+
 ## A two-minute tour
 
 1. Open the [demo](https://chalktalk-delta.vercel.app) and click a **ready-made lesson** — it starts instantly.

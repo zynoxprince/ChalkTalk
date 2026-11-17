@@ -56,7 +56,7 @@ export function Controls({ state, time, duration, readyUntil, complete, chapters
         <Icon name="restart" className="size-[18px]" />
       </button>
 
-      <span className="w-[4.6rem] shrink-0 text-right font-mono text-xs tabular-nums text-ink/60 sm:w-24 sm:text-sm">
+      <span className="shrink-0 whitespace-nowrap text-right font-mono text-xs tabular-nums text-ink/60 sm:text-sm">
         {fmt(time)} / {complete ? fmt(duration) : `~${fmt(duration)}`}
       </span>
 
@@ -76,11 +76,12 @@ export function Controls({ state, time, duration, readyUntil, complete, chapters
         <button
           type="button"
           onClick={onAsk}
-          className="hidden shrink-0 items-center gap-1.5 rounded-full bg-marker/90 px-3.5 py-2 text-sm font-semibold text-ink shadow-sm transition hover:bg-marker focus-visible:outline-2 focus-visible:outline-accent sm:flex"
+          aria-label={`${askLabel}: pause and ask a question (/)`}
+          className="flex shrink-0 items-center gap-1.5 rounded-full bg-marker/90 p-2.5 text-sm font-semibold text-ink shadow-sm transition hover:bg-marker focus-visible:outline-2 focus-visible:outline-accent sm:px-3.5 sm:py-2"
           title="Pause and ask a question (/)"
         >
           <Icon name="hand" className="size-4" />
-          {askLabel}
+          <span className="hidden sm:inline">{askLabel}</span>
         </button>
       )}
     </div>
