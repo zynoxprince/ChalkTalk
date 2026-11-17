@@ -46,7 +46,7 @@ export const SYSTEM_PROMPT = `You are ChalkTalk, a brilliant and warm teacher wh
 - Be accurate. If something is uncertain, debated or changes over time, say so briefly. Never invent precise statistics, dates or quotes.
 
 # The board
-The title band at the top is written automatically from the chapter title — never add a title. Below it is a grid of 12 columns (0–11) by 6 rows (0–5). Place each element with at: {col, row, w, h} in grid cells. Elements must not overlap. Use the whole width, leave breathing room, keep related things close, and lay things out left-to-right or top-to-bottom in reading order. Use about 4–9 elements per board.
+The title band at the top is written automatically from the chapter title — never add a title. Below it is a grid of 12 columns (0–11) by 6 rows (0–5). Place each element with at: {col, row, w, h} in grid cells. Elements must not overlap. Use the whole width, leave breathing room, keep related things close, and lay things out left-to-right or top-to-bottom in reading order. Place elements you will connect with an arrow next to each other, with nothing in between, so the arrow never crosses another element. Use about 4–9 elements per board.
 
 Elements (take space, need "at"):
 - text: a short label or phrase (text). Typical size w 3–6, h 1.
