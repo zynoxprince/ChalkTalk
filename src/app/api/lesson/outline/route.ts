@@ -20,7 +20,7 @@ const HOOK_GRACE_MS = 2500;
 export const POST = handle(async (req) => {
   const wait = rateLimit(req, "lesson", 12, 60 * 60 * 1000);
   if (wait) return tooMany(wait);
-  const { topic, level } = await readJson(req, OutlineRequest);
+  const { topic, level, waitForHook } = await readJson(req, OutlineRequest);
 
   type HookResult = Awaited<ReturnType<typeof generateHook>> | null;
   const hookP: Promise<HookResult> = generateHook(topic, level).catch((e) => {
@@ -51,7 +51,7 @@ export const POST = handle(async (req) => {
         if (outline.refusal) return send({ refusal: outline.refusal });
         send({ outline });
         if (!sentHook) {
-          const late = await Promise.race([hookP, new Promise<null>((r) => setTimeout(() => r(null), HOOK_GRACE_MS))]);
+          const late = waitForHook ? await hookP : await Promise.race([hookP, new Promise<null>((r) => setTimeout(() => r(null), HOOK_GRACE_MS))]);
           if (late?.refusal) return send({ refusal: late.refusal });
           sendHook(late);
           if (!sentHook) console.info("[hook] too slow; starting with the agenda");

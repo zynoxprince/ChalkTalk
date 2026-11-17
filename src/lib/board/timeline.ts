@@ -277,7 +277,8 @@ export function compileTimeline(
       for (const e of [...timed].sort((p, q) => p.start - q.start)) {
         for (const id of e.deps ?? []) {
           const d = byId.get(id);
-          if (d && d !== e) e.start = Math.max(e.start, d.start + d.dur * 0.6);
+          // ...but never so late that it would only appear while the board is being erased.
+          if (d && d !== e) e.start = Math.max(e.start, Math.min(d.start + d.dur * 0.6, contentEnd - 0.25));
         }
       }
     }

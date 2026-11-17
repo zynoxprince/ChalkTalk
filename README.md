@@ -147,7 +147,7 @@ Other scripts:
 | `pnpm test` | Unit tests (layout, timing, `frameAt`, player state machine, streaming parser, repair, speech checks) |
 | `pnpm lint` / `pnpm typecheck` | ESLint and TypeScript |
 | `pnpm build` | Production build |
-| `node scripts/generate-samples.mjs [slug]` | Regenerates the ready-made lessons through a running dev server (needs `ffmpeg`) |
+| `node scripts/generate-samples.mjs [slug]` | Regenerates the ready-made lessons through a running server (`BASE_URL`, default `http://localhost:3000`; needs `ffmpeg`) |
 | `node scripts/gen-icons.mjs` | Regenerates the curated icon set the model may draw |
 
 Visit **`/playground`** to see the whiteboard engine play a hand-written lesson with no AI at all (append `?t=12.5` to freeze a moment, or `?sample=seasons` to inspect a sample's boards).

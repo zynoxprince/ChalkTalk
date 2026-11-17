@@ -705,22 +705,26 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
       if (entries.length < 2) return buildElement({ ...a, kind: "list" }, rect, warnings);
       const r = inset(rect, 12);
       const n = entries.length;
+      // An optional chart title (text) sits above the bars.
+      const titleH = text ? clamp(r.h * 0.13, 30, 48) : 0;
       const valueSize = clamp(r.h * 0.11, 22, 40);
       const labelH = clamp(r.h * 0.17, 34, 64);
-      const top = r.y + valueSize * 1.5;
+      const top = r.y + titleH + valueSize * 1.5;
       const base = r.y + r.h - labelH;
       const slot = r.w / n;
       const barW = clamp(slot * 0.62, 26, 170);
       const max = Math.max(...entries.map((e) => e.value));
       const tint = tintOf(a.color, "blue");
+      const title = text ? textPart(text, { x: r.x, y: r.y, w: r.w, h: titleH }, color, { max: 40, min: 18, maxLines: 1, anchor: "middle" }) : null;
+      const axisLine = strokeParts(roughLine(r.x - 6, base, r.x + r.w + 6, base + 2, seed, { strokeWidth: 3 }), INK.ink, 3, title ? 0.45 : 0, 1, [[r.x - 6, base], [r.x + r.w + 6, base]]);
       const axis = el({
         id: `${a.id}.axis`,
         actionId: a.id,
         kind: "bars-axis",
-        label: null,
-        bbox: { x: r.x, y: base - 2, w: r.w, h: 4 },
-        parts: strokeParts(roughLine(r.x - 6, base, r.x + r.w + 6, base + 2, seed, { strokeWidth: 3 }), INK.ink, 3, 0, 1, [[r.x - 6, base], [r.x + r.w + 6, base]]),
-        natural: 0.4,
+        label: text || null,
+        bbox: title ? union([title.bbox, { x: r.x, y: base - 2, w: r.w, h: 4 }]) : { x: r.x, y: base - 2, w: r.w, h: 4 },
+        parts: title ? [{ ...title.part, a: 0, b: 0.5 }, ...axisLine] : axisLine,
+        natural: title ? 0.4 + textDur(text) : 0.4,
         clickable: false,
         seq: 0,
         seqCount: n + 1,

@@ -6,7 +6,8 @@ import { LEVELS, OutlineSchema } from "@/lib/lesson/schema";
 const topic = z.string().trim().min(2, "Please enter a topic.").max(160, "Please keep the topic under 160 characters.");
 const level = z.enum(LEVELS);
 
-export const OutlineRequest = z.object({ topic, level });
+/** `waitForHook`: pre-made lessons can afford to wait for the opening line instead of dropping a slow one. */
+export const OutlineRequest = z.object({ topic, level, waitForHook: z.boolean().optional() });
 
 export const ChapterRequest = z.object({ topic, level, outline: OutlineSchema, index: z.number().int().min(0).max(2) });
 

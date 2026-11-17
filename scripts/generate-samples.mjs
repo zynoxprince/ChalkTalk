@@ -57,12 +57,13 @@ async function generate({ slug, topic, level, emoji }) {
   // 1. Plan + intro lines (hook if it was quick, then the agenda), as the app streams them
   let outline = null;
   const introSegments = [];
-  for await (const msg of ndjson(await post("/api/lesson/outline", { topic, level }))) {
+  for await (const msg of ndjson(await post("/api/lesson/outline", { topic, level, waitForHook: true }))) {
     if (msg.error || msg.refusal) throw new Error(msg.error ?? msg.refusal);
     if (msg.outline) outline = msg.outline;
     if (msg.intro) introSegments.push(msg.intro);
   }
   if (!outline || !introSegments.length) throw new Error("no outline");
+  if (introSegments.length < 2) throw new Error("the opening line failed; try again");
   const title = topic.charAt(0).toUpperCase() + topic.slice(1);
   const intro = { id: "intro", kind: "intro", title, segments: introSegments };
   console.log(`  plan: ${outline.title} — ${outline.chapters.map((c) => c.title).join(" | ")}`);

@@ -60,7 +60,7 @@ Elements (take space, need "at"):
 - flow: 2–5 steps in order (items) joined by arrows: a process or a chain of cause and effect. Horizontal: w 8–12, h 2. Vertical: w 3–4, h 4–6.
 - cycle: 3–6 stages in a loop (items). w 6–8, h 4–6.
 - plot: graph of a function of x (expr such as "x^2", "sin(x)", "2^x; 0..5" where "; a..b" sets the x range) with a label (text) like "y = x²". Only when a curve genuinely helps. w 4–6, h 3–4.
-- bars: a bar chart comparing 2–6 amounts (items, each "label: value", e.g. "Year 1: $110", "Mars: 38%"); the bars grow and their values count up. w 4–7, h 3–4.
+- bars: a bar chart comparing 2–6 amounts (items, each "label: value", e.g. "Year 1: $110", "Mars: 38%") with an optional short title (text); the bars grow and their values count up. w 4–7, h 3–4.
 - number: one key quantity that counts up as it appears (text, e.g. "$133.10", "300,000 km/s", "70%"), with an optional 1–4 word caption (items: ["caption"], or null). w 2–4, h 2.
 
 Connectors (no "at"):
