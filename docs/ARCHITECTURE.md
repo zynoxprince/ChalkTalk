@@ -145,14 +145,14 @@ The recap and quiz are written from the chapters' actual narration (not just the
 
 ## 8. Voice
 
-The primary narrator is **Gemini TTS** (`gemini-3.8-flash-tts` via the Gemini Interactions API, `src/lib/server/gemini-tts.ts`): a true text-to-speech model that reads the transcript verbatim, with the teacher's tone set through `speech_metadata.style`. It returns raw 16-bit PCM at 24 kHz — exactly what the player schedules — so no transcoding is needed.
+The narrator is **Gemini TTS** (`google/gemini-3.8-flash-tts`), called through OpenRouter's text-to-speech endpoint (`/api/v1/audio/speech`, see `synthesizeSpeech` in `src/lib/server/openrouter.ts`). It is a true text-to-speech model that reads the script verbatim, with the teacher's tone set by a delivery instruction (`TTS_STYLE`). It returns raw 16-bit PCM at 24 kHz (`audio/pcm;rate=24000`), exactly what the player schedules, so no transcoding is needed. Because everything goes through OpenRouter, one key covers the lesson model and both voices.
 
-If Gemini fails (or no key is configured), the backup narrator is an audio-output chat model on OpenRouter. It is conversational by nature, so `src/lib/server/tts.ts` makes it behave like a strict TTS:
+If the narrator fails for a line, the backup narrator is an audio-output chat model (`openai/gpt-audio-mini`). It is conversational by nature, so `src/lib/server/tts.ts` makes it behave like a strict TTS:
 
 - It is prompted as a voice actor reading a quoted script, and its **transcript is compared with the script** (normalised word edit distance).
 - If it read the script and kept talking, the audio is **cut at the quietest pause** near where the script ends, with a short fade. Real mismatches are retried (up to three attempts, keeping the closest).
 - Leading and trailing silence is trimmed, which keeps segment timing tight.
-- Each line has a **time budget** that fits the speech route's 60-second limit. Gemini gets up to 30 seconds (it is retried once after a server error or a timeout), and the backup voice gets the rest. A Gemini 429 (quota used up) is not retried: the backup voice takes over right away.
+- Each line has a **time budget** that fits the speech route's 60-second limit. The narrator gets up to 30 seconds (it is retried once after a server error or a timeout), and the backup voice gets the rest. A bad request or a 429 (quota used up) is not retried: the backup voice takes over right away.
 - Only text **signed with HMAC** by the server that generated it can be voiced, so the endpoint is not a free TTS API. The signature covers the voice too, so the same URL always maps to the same voice and responses can be `immutable` and CDN-cached; audio from the backup voice is cached for only five minutes, so the primary voice takes over again once it recovers.
 - If the speech provider is unavailable, the client switches to a **browser-voice fallback** (`src/lib/player/narrator.ts`). Each voiceless line is spoken when its segment starts (from the current word after a seek), and the player holds the board at the segment boundary until the line finishes, so drawings never run ahead of the voice.
 
@@ -181,7 +181,7 @@ The answer is compiled as its own small timeline whose **base** is the paused bo
 | Model returns JSON that doesn't validate | Retried once with the validation errors; then repaired action by action |
 | A chapter fails to generate | Retried; if it still fails the lesson skips it and the chapter list offers "retry" |
 | A chapter stream breaks midway | Segments that already arrived are kept; the lesson continues |
-| The Gemini voice fails for a line | The backup voice (OpenRouter) reads that line; its audio is cached for only five minutes |
+| The Gemini voice fails for a line | The backup voice reads that line; its audio is cached for only five minutes |
 | A line can't be voiced at all | Up to two attempts; then the browser voice reads it (captions stay on) |
 | Speech provider unavailable | Detected once; remaining lines use the browser voice without further requests |
 | Playback catches up with generation | "The tutor is preparing the next part…"; resumes automatically |

@@ -1,14 +1,17 @@
 import type { z } from "zod";
 import { toStrictJsonSchema } from "@/lib/lesson/schema";
 import { config } from "./env";
+import { toPcm, type PcmAudio } from "./speech";
 
 /**
- * Thin OpenRouter client: schema-enforced JSON generation and streamed speech.
- * Uses fetch directly so the request shape (structured outputs, reasoning,
- * provider routing, audio modality) stays explicit.
+ * Thin OpenRouter client: schema-enforced JSON generation and speech (the
+ * text-to-speech endpoint, and audio-output chat models). Uses fetch directly
+ * so the request shape (structured outputs, reasoning, provider routing, audio
+ * modality) stays explicit.
  */
 
 const API = "https://openrouter.ai/api/v1/chat/completions";
+const SPEECH_API = "https://openrouter.ai/api/v1/audio/speech";
 
 export class AIError extends Error {
   constructor(
@@ -207,6 +210,34 @@ export async function streamStructured(req: Omit<StructuredRequest<unknown>, "sc
 /* Speech                                                              */
 /* ------------------------------------------------------------------ */
 
+/**
+ * One line through OpenRouter's text-to-speech endpoint (e.g. Gemini TTS, which
+ * reads the text verbatim). Returns raw 16-bit mono PCM and its sample rate.
+ */
+export async function synthesizeSpeech(text: string, opts: { model: string; voice: string; instructions?: string; timeoutMs?: number }): Promise<PcmAudio> {
+  let res: Response;
+  try {
+    res = await fetch(SPEECH_API, {
+      method: "POST",
+      headers: headers(),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 20_000),
+      body: JSON.stringify({ model: opts.model, input: text, voice: opts.voice, instructions: opts.instructions, response_format: "pcm" }),
+    });
+  } catch (e) {
+    throw new AIError(e instanceof Error && e.name === "TimeoutError" ? "The speech model took too long." : "Could not reach the speech model.");
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.warn(`[tts] ${opts.model} HTTP ${res.status}: ${body.slice(0, 300)}`);
+    if (res.status === 401 || res.status === 402 || res.status === 403) throw new AIError("The speech provider rejected the request.", 503, false);
+    // Server errors are worth another try; a bad request or a used-up quota is not.
+    throw new AIError(`Speech request failed (${res.status}).`, res.status === 429 ? 429 : 502, res.status >= 500);
+  }
+  const audio = toPcm(Buffer.from(await res.arrayBuffer()), res.headers.get("content-type"));
+  if (audio.pcm.length < 2400) throw new AIError("The speech model returned almost no audio.");
+  return audio;
+}
+
 const SPEECH_SYSTEM =
   "You are a voice actor recording lines for an educational whiteboard video. Read only the script you are given, exactly as written, word for word, in a warm, clear, upbeat teacher voice at a relaxed pace. Do not add, skip, answer, or comment on anything. Say nothing before or after the script.";
 
@@ -215,16 +246,19 @@ export interface SpeechResult {
   transcript: string;
 }
 
-/** Streams one narration line as 24 kHz 16-bit mono PCM (the audio model requires streaming). */
-export async function streamSpeech(text: string, opts: { voice?: string; model?: string; timeoutMs?: number } = {}): Promise<SpeechResult> {
+/**
+ * Streams one narration line from an audio-output chat model (e.g. gpt-audio-mini)
+ * as 24 kHz 16-bit mono PCM, with its transcript (these models require streaming).
+ */
+export async function streamSpeech(text: string, opts: { voice: string; model: string; timeoutMs?: number }): Promise<SpeechResult> {
   const res = await fetch(API, {
     method: "POST",
     headers: headers(),
     signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
     body: JSON.stringify({
-      model: opts.model ?? config.ttsModel,
+      model: opts.model,
       modalities: ["text", "audio"],
-      audio: { voice: opts.voice ?? config.ttsVoice, format: "pcm16" },
+      audio: { voice: opts.voice, format: "pcm16" },
       stream: true,
       messages: [
         { role: "system", content: SPEECH_SYSTEM },

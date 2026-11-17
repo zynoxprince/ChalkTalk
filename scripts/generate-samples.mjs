@@ -103,7 +103,7 @@ async function generate({ slug, topic, level, emoji }) {
           if (res.ok) {
             const pcm = Buffer.from(await res.arrayBuffer());
             const rate = Number(res.headers.get("x-audio-format")?.match(/rate=(\d+)/)?.[1]) || 24000;
-            voices.add(res.headers.get("x-speech-provider") ?? "?");
+            voices.add(res.headers.get("x-speech-model") ?? "?");
             seconds += pcm.length / 2 / rate;
             await toMp3(pcm, join(dir, `${seg.id}.mp3`), rate);
             break;

@@ -60,7 +60,7 @@ Keyboard: <kbd>Space</kbd> play/pause · <kbd>←</kbd>/<kbd>→</kbd> ±5 s · 
 | Part | How it's produced |
 | --- | --- |
 | Lesson plan, narration, drawings, recap, quiz | **Live** — generated per request by an LLM (default `google/gemini-4-hydrogen` via OpenRouter) |
-| Narration audio | **Live** — synthesised per line by Gemini TTS (`gemini-3.8-flash-tts`, voice `Sulafat`) when a Gemini key is set; otherwise, or as a backup, by an OpenRouter audio model (`openai/gpt-audio-mini`) |
+| Narration audio | **Live** — synthesised per line by Gemini TTS (`google/gemini-3.8-flash-tts`, voice `Sulafat`) via OpenRouter, with an OpenRouter audio model (`openai/gpt-audio-mini`) as the backup voice |
 | Answers to your questions | **Live** — generated with the lesson and the current board as context, then voiced |
 | The whiteboard drawing | Rendered by ChalkTalk's own engine from the model's board instructions (deterministic code, not images) |
 | "Ready-made lessons" on the home page | **Pre-generated** with exactly the same pipeline and stored as static JSON + MP3 files, so they start instantly and work even if the AI service is down. They're labelled "Sample lesson". |
@@ -96,7 +96,7 @@ flowchart LR
 
 **4. A fast start.** The first request makes two model calls in parallel: a tiny "hook" (the opening line and a hero drawing) and the lesson plan. Each is streamed to the browser the moment it's ready — the plan starts chapter generation immediately, the hook is voiced immediately — and neither waits for the other (a hook that lags the plan by more than 2.5 s is skipped). The agenda line is built from the plan in code. All three chapters are generated in parallel and **streamed**: each narration segment is validated, signed and sent to the browser the moment its JSON closes, so it can be voiced while the rest of the chapter is still being written. The player plays up to the "ready" edge and waits there only if it catches up. Locally, the tutor starts talking ~7 s after you click, with no pauses afterwards in our tests.
 
-**5. Voice you can trust.** The narrator is Gemini TTS, a true text-to-speech model that reads the script verbatim. If it's unavailable, an OpenRouter audio model takes over; because that one is conversational, ChalkTalk compares its transcript with the script, trims ad-libbed endings at the nearest pause and retries real mismatches. If no server voice is available at all, the browser's own voice reads the lesson. The speech endpoint only voices text signed (HMAC) by the server that generated it — the signature includes the voice — and responses are immutable and CDN-cacheable.
+**5. Voice you can trust.** The narrator is Gemini TTS (through OpenRouter's speech endpoint), a true text-to-speech model that reads the script verbatim. If it's unavailable, an audio chat model takes over; because that one is conversational, ChalkTalk compares its transcript with the script, trims ad-libbed endings at the nearest pause and retries real mismatches. If no server voice is available at all, the browser's own voice reads the lesson. The speech endpoint only voices text signed (HMAC) by the server that generated it — the signature includes the voice — and responses are immutable and CDN-cacheable.
 
 **6. Answers on the board.** A question pauses the lesson and is sent with the lesson plan, what was just said, the elements currently on the board (ids and labels), the element you pointed at, and the recent conversation. The tutor chooses to annotate the current board, draw a fresh mini-board, or reply in chat — and its answer plays as a small timeline layered over the frozen board.
 
@@ -123,7 +123,7 @@ Each lesson also tackles the topic's most common **misconception** explicitly: t
 - **zod** for the board-script schema, validation and JSON-Schema export for structured outputs
 - **rough.js** (hand-drawn strokes), **Lucide** (line-art drawings), **Caveat** (handwriting font)
 - **Web Audio API** for sample-accurate, gapless narration and the master clock
-- **OpenRouter** for the lesson model and the backup narrator; **Gemini API** for text-to-speech
+- **OpenRouter** for every model: the lesson model, Gemini TTS for the narrator and the backup voice
 - **Vitest** for the engine, player and pipeline tests · deployed on **Vercel**
 
 ## Run it locally
@@ -160,13 +160,13 @@ Visit **`/playground`** to see the whiteboard engine play a hand-written lesson 
 | `LESSON_MODEL` | no | `google/gemini-4-hydrogen` | Writes plans, chapters, recaps and quizzes |
 | `TUTOR_MODEL` | no | `LESSON_MODEL` | Answers questions |
 | `LESSON_REASONING` / `TUTOR_REASONING` | no | `minimal` | Reasoning effort; lower is faster |
-| `GEMINI_API_KEY` | no | — | Enables Gemini TTS as the narrator ([get a key](https://aistudio.google.com/apikey)) |
-| `GEMINI_TTS_MODEL` | no | `gemini-3.8-flash-tts` | Gemini TTS model (`gemini-3.8-flash-lite-tts` is faster) |
-| `GEMINI_TTS_VOICE` | no | `Sulafat` | Any Gemini prebuilt voice (e.g. `Achird`, `Kore`, `Charon`) |
-| `TTS_MODEL` | no | `openai/gpt-audio-mini` | OpenRouter audio model (backup narrator, or the narrator without a Gemini key) |
-| `TTS_VOICE` | no | `marin` | Voice for the OpenRouter narrator |
+| `TTS_MODEL` | no | `google/gemini-3.8-flash-tts` | Narrator: any OpenRouter text-to-speech model (`google/gemini-3.8-flash-lite-tts` is faster), or an audio chat model such as `openai/gpt-audio-mini` |
+| `TTS_VOICE` | no | `Sulafat` | Narrator voice (for Gemini: `Achird`, `Kore`, `Charon`, …) |
+| `TTS_STYLE` | no | a warm, upbeat teacher | Delivery direction for models that take one |
+| `BACKUP_TTS_MODEL` | no | `openai/gpt-audio-mini` | Reads a line if the narrator fails (`none` to turn off) |
+| `BACKUP_TTS_VOICE` | no | `marin` | Voice for the backup narrator |
 
-The lesson model must support structured outputs on OpenRouter. Without any working voice, lessons still play: the browser's built-in voice reads them.
+The lesson model must support structured outputs on OpenRouter. All models, including the voices, are called through OpenRouter, so one key is enough (with OpenRouter's BYOK, calls to Google models can use your own Google key). Without any working voice, lessons still play: the browser's built-in voice reads them.
 
 ## Project structure
 

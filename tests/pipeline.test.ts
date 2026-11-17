@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import { ArrayItemExtractor } from "@/lib/lesson/stream-json";
 import { cleanNarration, repairSegments } from "@/lib/lesson/repair";
 import { compareTranscript } from "@/lib/server/speech";
-import { extractAudio, toPcm } from "@/lib/server/gemini-tts";
+import { toPcm } from "@/lib/server/speech";
+import { isChatAudioModel } from "@/lib/server/tts";
 import { compileTimeline, type AudioInfo } from "@/lib/board/timeline";
 import { FIXTURE_SCENES } from "@/lib/lesson/fixture";
 import type { Action } from "@/lib/lesson/schema";
@@ -86,7 +87,7 @@ describe("streaming chapters in the timeline", () => {
   });
 });
 
-describe("Gemini TTS audio parsing", () => {
+describe("speech audio parsing", () => {
   const pcm = Buffer.from(Int16Array.from([0, 1000, -1000, 32767, -32768]).buffer);
 
   function wav(data: Buffer, rate: number) {
@@ -113,25 +114,19 @@ describe("Gemini TTS audio parsing", () => {
     expect(Buffer.compare(out.pcm, pcm)).toBe(0);
   });
 
-  it("passes raw L16 through, taking the rate from the mime type", () => {
-    expect(toPcm(pcm, "audio/l16; rate=24000").sampleRate).toBe(24000);
+  it("passes raw PCM through, taking the rate from the content type", () => {
+    // What OpenRouter's speech endpoint sends for Gemini TTS.
+    expect(toPcm(pcm, "audio/pcm;rate=24000;channels=1").sampleRate).toBe(24000);
+    expect(toPcm(pcm, "audio/L16;codec=pcm;rate=16000").sampleRate).toBe(16000);
     expect(Buffer.compare(toPcm(pcm, null).pcm, pcm)).toBe(0);
+    // An odd trailing byte is dropped so samples stay aligned.
+    expect(toPcm(Buffer.concat([pcm, Buffer.from([7])]), "audio/pcm").pcm.length).toBe(pcm.length);
   });
 
-  it("finds audio in Interactions and generateContent responses", () => {
-    const interactions = { steps: [{ type: "user_input" }, { type: "model_output", content: [{ type: "audio", data: "QUJD", mime_type: "audio/l16" }] }] };
-    expect(extractAudio(interactions)).toEqual({ data: "QUJD", mime: "audio/l16" });
-    expect(extractAudio({ output_audio: { data: "WFla" } })).toEqual({ data: "WFla", mime: null });
-    expect(extractAudio({ candidates: [{ content: { parts: [{ inlineData: { data: "Wlpa", mimeType: "audio/wav" } }] } }] })).toEqual({ data: "Wlpa", mime: "audio/wav" });
-    expect(extractAudio({ steps: [] })).toBeNull();
-  });
-
-  it("falls back to searching unknown response shapes for the audio blob", () => {
-    const blob = "A".repeat(200);
-    expect(extractAudio({ outputs: [{ type: "text", text: "hi" }, { type: "audio", data: blob, mime_type: "audio/l16;rate=24000" }] })).toEqual({ data: blob, mime: "audio/l16;rate=24000" });
-    expect(extractAudio({ candidates: [{ content: { parts: [{ inline_data: { mime_type: "audio/L16;codec=pcm;rate=24000", data: blob } }] } }] })).toEqual({ data: blob, mime: "audio/L16;codec=pcm;rate=24000" });
-    // Base64 that isn't marked as audio is never picked up.
-    expect(extractAudio({ outputs: [{ type: "image", data: blob, mime_type: "image/png" }] })).toBeNull();
-    expect(toPcm(Buffer.alloc(4), "audio/L16;codec=pcm;rate=24000").sampleRate).toBe(24000);
+  it("routes chat audio models and real TTS models differently", () => {
+    expect(isChatAudioModel("openai/gpt-audio-mini")).toBe(true);
+    expect(isChatAudioModel("openai/gpt-4o-audio-preview")).toBe(true);
+    expect(isChatAudioModel("google/gemini-3.8-flash-tts")).toBe(false);
+    expect(isChatAudioModel("openai/gpt-4o-mini-tts-2025-12-15")).toBe(false);
   });
 });

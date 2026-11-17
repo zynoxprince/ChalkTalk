@@ -1,6 +1,5 @@
-import { config, type TtsProvider } from "./env";
-import { geminiSpeech } from "./gemini-tts";
-import { AIError, streamSpeech } from "./openrouter";
+import { config } from "./env";
+import { AIError, streamSpeech, synthesizeSpeech } from "./openrouter";
 import { compareTranscript, cutAtPause, trimSilence } from "./speech";
 
 export type SpeechMatch = "verbatim" | "exact" | "close" | "trimmed" | "approx";
@@ -10,40 +9,69 @@ export interface Speech {
   sampleRate: number;
   match: SpeechMatch;
   attempts: number;
-  provider: TtsProvider;
-  /** The primary narrator failed and a backup voice was used. */
+  /** The model that actually spoke. */
+  model: string;
+  /** The narrator failed and the backup voice was used. */
   fallback: boolean;
 }
 
+type Spoken = Omit<Speech, "model" | "fallback">;
+
 /** Everything must finish inside the speech route's 60 s limit, with room to send the audio. */
 const REQUEST_BUDGET_MS = 55_000;
-/** Gemini's share of that, so the backup voice always gets a fair chance. */
-const GEMINI_BUDGET_MS = 30_000;
+/** The narrator's share of that, so the backup voice always gets a fair chance. */
+const NARRATOR_BUDGET_MS = 30_000;
 
 /**
- * Voices one narration segment. Gemini TTS (a true TTS) is used when configured;
- * if it fails, the OpenRouter audio model takes over so the lesson keeps talking.
+ * Voices one narration segment with the narrator (Gemini TTS through
+ * OpenRouter by default). If it fails, the backup voice reads the line so the
+ * lesson keeps talking.
  */
 export async function synthesize(text: string): Promise<Speech> {
   const deadline = Date.now() + REQUEST_BUDGET_MS;
-  if (config.ttsProvider === "gemini") {
+  try {
+    const spoken = await speak(config.ttsModel, config.ttsVoice, text, Math.min(deadline, Date.now() + NARRATOR_BUDGET_MS));
+    return { ...spoken, model: config.ttsModel, fallback: false };
+  } catch (e) {
+    if (!config.backupTtsModel || config.backupTtsModel === config.ttsModel) throw e;
+    console.warn(`[tts] ${config.ttsModel} failed, using the backup voice:`, e instanceof Error ? e.message : e);
+    const spoken = await speak(config.backupTtsModel, config.backupTtsVoice, text, deadline);
+    return { ...spoken, model: config.backupTtsModel, fallback: true };
+  }
+}
+
+/** Audio-output chat models (talk back, so need checking) vs. real text-to-speech models. */
+export const isChatAudioModel = (model: string) => /(^|\/)gpt-(4o-)?audio/.test(model);
+
+function speak(model: string, voice: string, text: string, deadline: number): Promise<Spoken> {
+  return isChatAudioModel(model) ? chatAudioSpeech(model, voice, text, deadline) : ttsSpeech(model, voice, text, deadline);
+}
+
+/** A text-to-speech model reads the script verbatim; retry once after a server error or timeout. */
+async function ttsSpeech(model: string, voice: string, text: string, deadline: number): Promise<Spoken> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining < 3_000) break;
     try {
-      const { pcm, sampleRate } = await geminiSpeech(text, { deadline: Date.now() + GEMINI_BUDGET_MS });
-      return { pcm: trimSilence(pcm), sampleRate, match: "verbatim", attempts: 1, provider: "gemini", fallback: false };
+      const { pcm, sampleRate } = await synthesizeSpeech(text, { model, voice, instructions: config.ttsStyle, timeoutMs: Math.min(20_000, remaining) });
+      return { pcm: trimSilence(pcm, 400, sampleRate), sampleRate, match: "verbatim", attempts: attempt };
     } catch (e) {
-      console.warn("[tts] Gemini TTS failed, using the backup voice:", e instanceof Error ? e.message : e);
-      return { ...(await openRouterSpeech(text, deadline)), provider: "openrouter", fallback: true };
+      lastError = e;
+      if (e instanceof AIError && !e.retryable) break;
+      console.warn(`[tts] ${model} attempt ${attempt} failed:`, e instanceof Error ? e.message : e);
+      await new Promise((r) => setTimeout(r, 500 * attempt));
     }
   }
-  return { ...(await openRouterSpeech(text, deadline)), provider: "openrouter", fallback: false };
+  throw lastError instanceof Error ? lastError : new AIError("Speech generation timed out.");
 }
 
 /**
- * The OpenRouter audio model is conversational, so check it actually said the
+ * An audio-output chat model is conversational, so check it actually said the
  * script: ad-libbed endings are trimmed at a pause; real mismatches are retried
  * while there's time left before `deadline`.
  */
-async function openRouterSpeech(text: string, deadline: number): Promise<{ pcm: Buffer; sampleRate: number; match: SpeechMatch; attempts: number }> {
+async function chatAudioSpeech(model: string, voice: string, text: string, deadline: number): Promise<Spoken> {
   let best: { pcm: Buffer; sim: number } | null = null;
   let lastError: unknown = null;
   let attempts = 0;
@@ -53,11 +81,11 @@ async function openRouterSpeech(text: string, deadline: number): Promise<{ pcm: 
     attempts = attempt;
     let result;
     try {
-      result = await streamSpeech(text, { timeoutMs: Math.min(30_000, remaining) });
+      result = await streamSpeech(text, { model, voice, timeoutMs: Math.min(30_000, remaining) });
     } catch (e) {
       lastError = e;
       if (e instanceof AIError && !e.retryable) throw e;
-      console.warn(`[tts] attempt ${attempt} failed:`, e instanceof Error ? e.message : e);
+      console.warn(`[tts] ${model} attempt ${attempt} failed:`, e instanceof Error ? e.message : e);
       continue;
     }
     const verdict = compareTranscript(text, result.transcript);

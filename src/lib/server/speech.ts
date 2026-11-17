@@ -1,7 +1,8 @@
 /**
- * Making a conversational audio model behave like a strict text-to-speech
- * engine: compare what it said (its transcript) with the script, trim
- * ad-libbed endings at a natural pause, and tidy up silence.
+ * Audio helpers for narration: making a conversational audio model behave like
+ * a strict text-to-speech engine (compare its transcript with the script, trim
+ * ad-libbed endings at a natural pause), tidying up silence, and reading raw
+ * PCM out of speech responses.
  */
 
 const SAMPLE_RATE = 24000;
@@ -87,16 +88,45 @@ export function cutAtPause(pcm: Buffer, fraction: number): Buffer {
 }
 
 /** Trims leading/trailing silence, leaving a little natural padding. */
-export function trimSilence(pcm: Buffer, threshold = 400): Buffer {
+export function trimSilence(pcm: Buffer, threshold = 400, rate = SAMPLE_RATE): Buffer {
   const s = samples(pcm);
   let a = 0;
   while (a < s.length && Math.abs(s[a]) < threshold) a++;
   let b = s.length - 1;
   while (b > a && Math.abs(s[b]) < threshold) b--;
   if (a >= b) return pcm;
-  const start = Math.max(0, a - Math.floor(SAMPLE_RATE * 0.06));
-  const end = Math.min(s.length, b + Math.floor(SAMPLE_RATE * 0.12));
+  const start = Math.max(0, a - Math.floor(rate * 0.06));
+  const end = Math.min(s.length, b + Math.floor(rate * 0.12));
   return Buffer.from(Int16Array.from(s.subarray(start, end)).buffer);
 }
 
-export const pcmSeconds = (pcm: Buffer) => pcm.byteLength / 2 / SAMPLE_RATE;
+export const pcmSeconds = (pcm: Buffer, rate = SAMPLE_RATE) => pcm.byteLength / 2 / rate;
+
+export interface PcmAudio {
+  pcm: Buffer;
+  sampleRate: number;
+}
+
+/**
+ * Raw 16-bit mono PCM from a speech response: a RIFF/WAV header is stripped
+ * (taking its sample rate); otherwise the rate comes from the content type,
+ * e.g. `audio/pcm;rate=24000;channels=1`.
+ */
+export function toPcm(bytes: Buffer, mime: string | null, fallbackRate = SAMPLE_RATE): PcmAudio {
+  const rateFromMime = mime?.match(/rate=(\d+)/)?.[1];
+  if (bytes.length >= 12 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WAVE") {
+    let offset = 12;
+    let sampleRate = fallbackRate;
+    while (offset + 8 <= bytes.length) {
+      const id = bytes.toString("ascii", offset, offset + 4);
+      const size = bytes.readUInt32LE(offset + 4);
+      if (id === "fmt ") sampleRate = bytes.readUInt32LE(offset + 12);
+      if (id === "data") return { pcm: bytes.subarray(offset + 8, Math.min(bytes.length, offset + 8 + size)), sampleRate };
+      offset += 8 + size + (size % 2);
+    }
+    return { pcm: bytes.subarray(44), sampleRate };
+  }
+  // An odd byte count would misalign the 16-bit samples.
+  const even = bytes.length % 2 ? bytes.subarray(0, bytes.length - 1) : bytes;
+  return { pcm: even, sampleRate: rateFromMime ? Number(rateFromMime) : fallbackRate };
+}

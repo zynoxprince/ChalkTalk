@@ -5,9 +5,9 @@ import { synthesize } from "@/lib/server/tts";
 export const maxDuration = 60;
 
 /**
- * Voices one signed narration segment as raw PCM (16-bit, 24 kHz, mono).
- * GET + immutable caching: the same signed text always maps to the same audio,
- * so replays and retries are served from the CDN.
+ * Voices one signed narration segment as raw 16-bit mono PCM (the sample rate is
+ * in X-Audio-Format). GET + immutable caching: the same signed text always maps
+ * to the same audio, so replays and retries are served from the CDN.
  */
 export const GET = handle(async (req) => {
   const url = new URL(req.url);
@@ -23,10 +23,11 @@ export const GET = handle(async (req) => {
     headers: {
       "Content-Type": "application/octet-stream",
       "X-Audio-Format": `pcm16le; rate=${speech.sampleRate}; channels=1`,
-      "X-Speech-Provider": speech.provider,
+      "X-Speech-Model": speech.model,
+      "X-Speech-Fallback": speech.fallback ? "1" : "0",
       "X-Speech-Match": speech.match,
       "X-Speech-Attempts": String(speech.attempts),
-      // Backup-voice audio is cached briefly, so the primary voice takes over again once it recovers.
+      // Backup-voice audio is cached briefly, so the narrator takes over again once it recovers.
       "Cache-Control": speech.fallback ? "public, max-age=300, s-maxage=300" : "public, max-age=31536000, s-maxage=31536000, immutable",
     },
   });
