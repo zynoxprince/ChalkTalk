@@ -97,12 +97,17 @@ export interface RepairOptions {
   sign: (narration: string) => string;
   maxSegments?: number;
   maxActionsPerSegment?: number;
+  /** For streamed chapters: number of segments already emitted for this scene. */
+  startIndex?: number;
+  /** For streamed chapters: action ids already used in this scene. */
+  seen?: Set<string>;
 }
 
 export function repairSegments(segs: GeneratedSegment[], opts: RepairOptions): Segment[] {
   const out: Segment[] = [];
-  const seen = new Set<string>();
-  let actionIndex = 0;
+  const seen = opts.seen ?? new Set<string>();
+  const start = opts.startIndex ?? 0;
+  let actionIndex = seen.size;
   for (const seg of segs.slice(0, opts.maxSegments ?? 6)) {
     const narration = cleanNarration(seg.narration ?? "");
     if (narration.length < 3) continue;
@@ -116,7 +121,7 @@ export function repairSegments(segs: GeneratedSegment[], opts: RepairOptions): S
       seen.add(id);
       actions.push({ ...fixed, id });
     }
-    out.push({ id: `${opts.sceneId}-${out.length}`, narration, sig: opts.sign(narration), actions });
+    out.push({ id: `${opts.sceneId}-${start + out.length}`, narration, sig: opts.sign(narration), actions });
   }
   return out;
 }

@@ -85,8 +85,21 @@ ${EXAMPLE}`;
 const chapterLines = (o: Pick<Outline, "chapters">) =>
   o.chapters.map((c, i) => `${i + 1}. ${c.title}: ${c.goal} (board: ${c.visual_idea})${c.misconception ? ` [address misconception: ${c.misconception}]` : ""}`).join("\n");
 
+export function hookPrompt(topic: string, level: Level) {
+  return `Write the opening line of a two-minute whiteboard lesson.
+
+Topic: "${topic}"
+Learner: ${LEVEL_GUIDE[level]}.
+
+Fill in:
+- refusal: null normally. If the topic asks for something harmful (weapons, self-harm, hate, sexual content, dangerous instructions), set a one-sentence kind explanation here.
+- narration: ONE or two spoken sentences, 14–26 words: a hook that makes the learner curious (a question, a puzzle or a surprising fact). Do not greet, do not preview the chapters, do not say "today we'll learn".
+- icon: one icon name from the icon list for a big "hero" drawing of the topic.
+- caption: a 1–4 word caption for that drawing.`;
+}
+
 export function outlinePrompt(topic: string, level: Level) {
-  return `Plan a two-minute whiteboard lesson and write its intro.
+  return `Plan a two-minute whiteboard lesson.
 
 Topic: "${topic}"
 Learner: ${LEVEL_GUIDE[level]}.
@@ -97,8 +110,7 @@ Fill in:
 - summary: one sentence: what the learner will understand by the end.
 - scope_note: null, or one short sentence if you narrowed a very broad topic or the topic is time-sensitive or contested.
 - clarify: null in almost all cases. Only if the topic is genuinely ambiguous (e.g. "Java", "Mercury", "Python" with no context) give {question, options: 2–4 short specific topics}, and still plan the most likely meaning.
-- intro: 1 or 2 segments, 25–40 words in total: a hook (a question, puzzle or surprising fact) and a quick preview of the three chapters. Board: a hero icon for the topic (or a striking label) and a list of the three chapter titles.
-- chapters: exactly 3, building on each other (intuition → how it works → example or application). For each: title (2–5 words), goal (one sentence), visual_idea (what the board will show, naming element kinds), misconception (the common wrong belief to tackle in this chapter, or null). Exactly one chapter should tackle the most common misconception about this topic.`;
+- chapters: exactly 3, building on each other (intuition → how it works → example or application). For each: title (2–5 words, will be read aloud in a list), goal (one sentence), visual_idea (what the board will show, naming element kinds), misconception (the common wrong belief to tackle in this chapter, or null). Exactly one chapter should tackle the most common misconception about this topic.`;
 }
 
 export function chapterPrompt(topic: string, level: Level, outline: Outline, index: number) {

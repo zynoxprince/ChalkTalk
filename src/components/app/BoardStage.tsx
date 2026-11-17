@@ -89,8 +89,8 @@ export function BoardStage(p: BoardStageProps) {
       )}
 
       {mode.kind === "answer" && (
-        <div className="absolute inset-x-0 top-0 flex items-center justify-between gap-3 bg-gradient-to-b from-board via-board/90 to-transparent px-3 pb-6 pt-3 sm:px-4">
-          <span className="flex min-w-0 items-center gap-2 rounded-full bg-marker/90 px-3 py-1 text-xs font-semibold text-ink shadow-sm sm:text-sm">
+        <div className="absolute right-2 top-2 flex max-w-[calc(100%-1rem)] items-center gap-2 sm:right-3 sm:top-3">
+          <span className="flex min-w-0 items-center gap-2 rounded-full bg-marker px-3 py-1 text-xs font-semibold text-ink shadow-sm sm:text-sm">
             <Icon name="hand" className="size-4 shrink-0" />
             <span className="truncate">Answering: “{mode.question}”</span>
           </span>

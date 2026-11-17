@@ -31,7 +31,8 @@ export function Board({ timeline, time, overlay, interactive = false, focusedId 
   const uid = useId().replace(/[^a-zA-Z0-9]/g, "");
   const frame: Frame | null = useMemo(() => (timeline ? frameAt(timeline, time) : null), [timeline, time]);
   const over: Frame | null = useMemo(() => (overlay ? frameAt(overlay.timeline, overlay.time) : null), [overlay]);
-  const pen = showPen ? penPosition(over?.active ?? frame?.active ?? null) : null;
+  // While an answer is drawn over a paused board, only the answer's pen moves.
+  const pen = showPen ? penPosition(over ? over.active : (frame?.active ?? null)) : null;
   const label = frame?.scene ? `Whiteboard: ${frame.scene.title}` : "Whiteboard";
 
   return (

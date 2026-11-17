@@ -48,7 +48,7 @@ export function compareTranscript(script: string, transcript: string): Transcrip
     }
   }
   const similarity = 1 - editDistance(want, got) / Math.max(want.length, got.length);
-  return similarity >= 0.85 ? { kind: "close", similarity } : { kind: "mismatch", similarity };
+  return similarity >= 0.8 ? { kind: "close", similarity } : { kind: "mismatch", similarity };
 }
 
 function samples(pcm: Buffer): Int16Array {

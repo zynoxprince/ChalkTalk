@@ -130,6 +130,79 @@ export async function generateStructured<T>(req: StructuredRequest<T>): Promise<
   throw new AIError(lastError || "The AI request failed.");
 }
 
+/**
+ * Streams a schema-enforced JSON response, calling `onText` with each piece of
+ * content as it arrives (so callers can act on complete items early).
+ */
+export async function streamStructured(req: Omit<StructuredRequest<unknown>, "schema"> & { schema: z.ZodType }, onText: (chunk: string) => void): Promise<string> {
+  const t0 = Date.now();
+  let res: Response;
+  try {
+    res = await fetch(API, {
+      method: "POST",
+      headers: headers(),
+      signal: AbortSignal.timeout(req.timeoutMs ?? 58_000),
+      body: JSON.stringify({
+        model: req.model,
+        stream: true,
+        messages: [
+          { role: "system", content: req.system },
+          { role: "user", content: req.user },
+        ],
+        max_tokens: req.maxTokens ?? 8000,
+        reasoning: { effort: req.reasoning ?? "low", exclude: true },
+        response_format: { type: "json_schema", json_schema: { name: req.name, strict: true, schema: jsonSchemaFor(req.schema) } },
+        provider: { require_parameters: true },
+      }),
+    });
+  } catch (e) {
+    throw new AIError(e instanceof Error && e.name === "TimeoutError" ? "The model took too long to respond." : "Could not reach the model.");
+  }
+  if (!res.ok || !res.body) {
+    const body = await res.text().catch(() => "");
+    console.warn(`[ai] ${req.label ?? req.name} stream HTTP ${res.status}: ${body.slice(0, 300)}`);
+    if (res.status === 401 || res.status === 402 || res.status === 403) throw new AIError("The AI provider rejected the request.", 503, false);
+    throw new AIError(res.status === 429 ? "The AI provider is busy right now." : `The AI provider returned an error (${res.status}).`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  let text = "";
+  let first = 0;
+  let finish = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffered += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buffered.indexOf("\n")) >= 0) {
+      const line = buffered.slice(0, nl).trim();
+      buffered = buffered.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      let json;
+      try {
+        json = JSON.parse(data);
+      } catch {
+        continue;
+      }
+      if (json.error) throw new AIError(`The AI provider failed mid-answer: ${json.error.message ?? "unknown error"}`);
+      const choice = json.choices?.[0];
+      const piece: string | undefined = choice?.delta?.content;
+      if (piece) {
+        if (!first) first = Date.now() - t0;
+        text += piece;
+        onText(piece);
+      }
+      if (choice?.finish_reason) finish = choice.finish_reason;
+    }
+  }
+  console.info(`[ai] ${req.label ?? req.name} ${req.model} streamed ${Date.now() - t0}ms (first token ${first}ms) chars=${text.length} finish=${finish}`);
+  if (finish === "content_filter") throw new AIError("The topic was blocked by the model's safety filter.", 422, false);
+  return text;
+}
+
 /* ------------------------------------------------------------------ */
 /* Speech                                                              */
 /* ------------------------------------------------------------------ */

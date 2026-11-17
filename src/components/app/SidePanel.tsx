@@ -219,7 +219,7 @@ function TutorAvatar() {
 function LessonCard(p: PanelData) {
   const s = p.session;
   const tl = p.timeline;
-  const generating = s.source === "live" && (s.scenes.some((x) => x.status === "pending") || s.voice.ready < s.voice.total);
+  const generating = s.source === "live" && (s.scenes.some((x) => x.status === "pending" || x.status === "streaming") || s.voice.ready < s.voice.total);
   return (
     <div className="flex gap-2">
       <TutorAvatar />
@@ -240,7 +240,7 @@ function LessonCard(p: PanelData) {
               <li key={sc.scene.id}>
                 <button
                   type="button"
-                  disabled={sc.status !== "ready" || !ts || (!tl?.complete && ts.start > (tl?.readyUntil ?? 0))}
+                  disabled={(sc.status !== "ready" && sc.status !== "streaming") || !ts || (!tl?.complete && ts.start > (tl?.readyUntil ?? 0))}
                   onClick={() => ts && p.onSeek(ts.start)}
                   className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition enabled:hover:bg-white ${active ? "bg-white font-semibold shadow-sm" : ""}`}
                 >
@@ -248,7 +248,7 @@ function LessonCard(p: PanelData) {
                     {sc.scene.kind === "intro" ? "★" : sc.scene.kind === "recap" ? "✓" : i}
                   </span>
                   <span className="min-w-0 flex-1 truncate">{label}</span>
-                  {sc.status === "pending" ? (
+                  {sc.status === "pending" || sc.status === "streaming" ? (
                     <span className="flex items-center gap-1 text-xs text-ink/50">
                       <Icon name="loader" className="size-3.5 animate-spin" /> writing
                     </span>

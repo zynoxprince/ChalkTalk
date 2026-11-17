@@ -97,6 +97,16 @@ export const ChapterPlanSchema = z.object({
 });
 export type ChapterPlan = z.infer<typeof ChapterPlanSchema>;
 
+/** The opening line, written by a tiny fast call so the lesson can start talking early. */
+export const HookSchema = z.object({
+  refusal: z.string().nullable(),
+  narration: z.string(),
+  icon: z.string(),
+  caption: z.string(),
+});
+export type Hook = z.infer<typeof HookSchema>;
+
+/** The lesson plan (written in parallel with the hook). */
 export const OutlineSchema = z.object({
   refusal: z.string().nullable(),
   title: z.string(),
@@ -105,7 +115,6 @@ export const OutlineSchema = z.object({
   clarify: z
     .object({ question: z.string(), options: z.array(z.string()) })
     .nullable(),
-  intro: z.array(SegmentSchema),
   chapters: z.array(ChapterPlanSchema),
 });
 export type Outline = z.infer<typeof OutlineSchema>;

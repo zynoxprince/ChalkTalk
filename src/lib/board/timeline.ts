@@ -60,6 +60,8 @@ export interface SceneInput {
   scene: Scene;
   /** Content still being generated: reserve time so the seek bar can show it. */
   pending?: boolean;
+  /** Some segments are here but more are still streaming in: playback must wait at its end. */
+  partial?: boolean;
   estimatedDuration?: number;
   /** Elements already on the board when this scene starts (answer overlays). */
   base?: BoardElement[];
@@ -258,6 +260,7 @@ export function compileTimeline(
   if (scenes.length) scenes[scenes.length - 1].end = scenes[scenes.length - 1].contentEnd + 0.6;
   const duration = scenes.length ? scenes[scenes.length - 1].end : 0;
 
+  const partialScenes = new Set(inputs.filter((i) => i.partial && !i.pending).map((i) => i.scene.id));
   let readyUntil = 0;
   let blocked = false;
   for (const sc of scenes) {
@@ -273,6 +276,7 @@ export function compileTimeline(
       }
       readyUntil = seg.end;
     }
+    if (partialScenes.has(sc.id)) blocked = true;
   }
   const complete = !!opts.complete && !blocked;
   if (complete) readyUntil = duration;

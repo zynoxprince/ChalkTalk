@@ -17,7 +17,7 @@ import { LessonPlayer } from "@/lib/player/player";
  * keeps playing up to the "ready" edge and waits there if it catches up.
  */
 
-export type SceneStatus = "pending" | "ready" | "failed";
+export type SceneStatus = "pending" | "streaming" | "ready" | "failed";
 
 export interface SessionScene {
   scene: Scene;
@@ -66,6 +66,41 @@ export async function postJson<T>(path: string, body: unknown, signal?: AbortSig
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new ApiError(json.error ?? `Request failed (${res.status}).`, res.status);
   return json as T;
+}
+
+/** POSTs JSON and returns the response for streaming, with friendly errors. */
+async function openStream(path: string, body: unknown, signal: AbortSignal): Promise<Response> {
+  let res: Response;
+  try {
+    res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") throw e;
+    throw new ApiError("Can't reach the server. Check your connection and try again.", 0);
+  }
+  if (!res.ok || !res.body) {
+    const j = await res.json().catch(() => ({}));
+    throw new ApiError(j.error ?? `Request failed (${res.status}).`, res.status);
+  }
+  return res;
+}
+
+/** Yields one parsed object per line of an NDJSON response. */
+async function* readNdjson<T>(res: Response): AsyncGenerator<T> {
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (line) yield JSON.parse(line) as T;
+    }
+  }
+  if (buf.trim()) yield JSON.parse(buf) as T;
 }
 
 const SCENE_ESTIMATE = { chapter: 32, recap: 14 };
@@ -136,51 +171,89 @@ export class LessonSession {
 
   async startLive() {
     const { topic, level } = this.state;
-    const signal = this.aborter.signal;
-    let outline: Outline;
-    let intro: Scene;
+    // The intro board is titled with the learner's own question.
+    const introTitle = topic.charAt(0).toUpperCase() + topic.slice(1);
+    const intro = (segments: Segment[], status: SceneStatus): SessionScene => ({ scene: { id: "intro", kind: "intro", title: introTitle, segments }, status });
+    let hook: Segment | null = null;
+    let outline: Outline | null = null;
     try {
-      ({ outline, intro } = await postJson<{ outline: Outline; intro: Scene }>("/api/lesson/outline", { topic, level }, signal));
+      const res = await openStream("/api/lesson/outline", { topic, level }, this.aborter.signal);
+      for await (const msg of readNdjson<{ hook?: Segment; outline?: Outline; agenda?: Segment; refusal?: string; error?: string }>(res)) {
+        if (msg.refusal) {
+          this.set({ phase: "error", refusal: msg.refusal, error: msg.refusal });
+          return;
+        }
+        if (msg.error) throw new ApiError(msg.error, 502);
+        if (msg.hook) {
+          // The opening line arrives first: start voicing it while the plan is written.
+          hook = msg.hook;
+          this.set({ phase: "lesson", scenes: [intro([hook], "streaming")] });
+          this.enqueue([hook]);
+          this.recompile();
+        }
+        if (msg.outline && msg.agenda) {
+          outline = msg.outline;
+          this.outline = outline;
+          this.set({
+            phase: "lesson",
+            title: outline.title,
+            summary: outline.summary,
+            scopeNote: outline.scope_note,
+            clarify: outline.clarify,
+            chapters: outline.chapters.map((c) => ({ title: c.title, goal: c.goal })),
+            scenes: [
+              intro(hook ? [hook, msg.agenda] : [msg.agenda], "ready"),
+              ...outline.chapters.map((c, i): SessionScene => ({ scene: { id: `c${i + 1}`, kind: "chapter", title: c.title, segments: [] }, status: "pending" })),
+              { scene: { id: "recap", kind: "recap", title: "Recap", segments: [] }, status: "pending" },
+            ],
+          });
+          this.enqueue([msg.agenda]);
+          this.recompile();
+        }
+      }
+      if (!outline) throw new ApiError("The lesson plan could not be written. Please try again.", 502);
     } catch (e) {
       if ((e as Error).name !== "AbortError") this.set({ phase: "error", error: (e as Error).message });
       return;
     }
-    this.outline = outline;
-    if (outline.refusal) {
-      this.set({ phase: "error", refusal: outline.refusal, error: outline.refusal, title: outline.title });
-      return;
-    }
-    const chapterScenes: SessionScene[] = outline.chapters.map((c, i) => ({
-      scene: { id: `c${i + 1}`, kind: "chapter", title: c.title, segments: [] },
-      status: "pending",
-    }));
-    this.set({
-      phase: "lesson",
-      title: outline.title,
-      summary: outline.summary,
-      scopeNote: outline.scope_note,
-      clarify: outline.clarify,
-      chapters: outline.chapters.map((c) => ({ title: c.title, goal: c.goal })),
-      scenes: [{ scene: intro, status: "ready" }, ...chapterScenes, { scene: { id: "recap", kind: "recap", title: "Recap", segments: [] }, status: "pending" }],
-    });
-    this.enqueue(intro.segments);
-    this.recompile();
-
     await Promise.all(outline.chapters.map((_, i) => this.loadChapter(i)));
     await this.loadRecap();
   }
 
   private async loadChapter(index: number, attempt = 1): Promise<void> {
     const { topic, level } = this.state;
+    const slot = index + 1;
+    const base = this.state.scenes[slot].scene;
+    let received = 0;
     try {
-      const { scene } = await postJson<{ scene: Scene }>("/api/lesson/chapter", { topic, level, outline: this.outline, index }, this.aborter.signal);
-      this.replaceScene(index + 1, { scene, status: "ready" });
-      this.enqueue(scene.segments);
+      const res = await openStream("/api/lesson/chapter", { topic, level, outline: this.outline, index }, this.aborter.signal);
+      // NDJSON: one segment per line as soon as the model has written it.
+      let streamError: string | null = null;
+      for await (const msg of readNdjson<{ segment?: Segment; done?: boolean; error?: string }>(res)) {
+        if (msg.segment) {
+          received++;
+          const cur = this.state.scenes[slot].scene;
+          this.replaceScene(slot, { scene: { ...cur, segments: [...cur.segments, msg.segment] }, status: "streaming" });
+          this.enqueue([msg.segment]);
+          this.recompile();
+        } else if (msg.error) {
+          streamError = msg.error;
+        }
+      }
+      if (received === 0) throw new ApiError(streamError ?? "This chapter came back empty.", 502);
+      this.replaceScene(slot, { scene: this.state.scenes[slot].scene, status: "ready" });
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
+      if (received > 0) {
+        // Keep what arrived; the lesson simply moves on sooner.
+        this.replaceScene(slot, { scene: this.state.scenes[slot].scene, status: "ready" });
+        this.recompile();
+        return;
+      }
+      this.replaceScene(slot, { scene: base, status: "pending" });
       if (attempt < 2 && !(e instanceof ApiError && e.status === 429)) return this.loadChapter(index, attempt + 1);
       const title = this.outline?.chapters[index]?.title ?? `Chapter ${index + 1}`;
-      // Keep the lesson going: a short spoken apology instead of a hole.
+      // Skip this chapter so the lesson keeps going; the panel offers a retry.
       this.replaceScene(index + 1, {
         scene: { id: `c${index + 1}`, kind: "chapter", title, segments: [] },
         status: "failed",
@@ -310,7 +383,7 @@ export class LessonSession {
   /* ------------------------------ timeline ------------------------------- */
 
   private complete() {
-    const allScenesSettled = this.state.scenes.length > 0 && this.state.scenes.every((s) => s.status !== "pending");
+    const allScenesSettled = this.state.scenes.length > 0 && this.state.scenes.every((s) => s.status === "ready" || s.status === "failed");
     const allVoiced = this.state.scenes.every((s) => s.scene.segments.every((g) => this.audio.has(g.id)));
     return allScenesSettled && allVoiced;
   }
@@ -322,6 +395,7 @@ export class LessonSession {
       .map((s) => ({
         scene: s.scene,
         pending: s.status === "pending",
+        partial: s.status === "streaming",
         estimatedDuration: s.scene.kind === "recap" ? SCENE_ESTIMATE.recap : SCENE_ESTIMATE.chapter,
       }));
     const timeline = compileTimeline(inputs, this.audio, { complete: this.complete() });
