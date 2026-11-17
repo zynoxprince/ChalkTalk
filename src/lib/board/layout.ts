@@ -52,6 +52,8 @@ export type Part =
       blend?: boolean;
       /** Approximate pen path, used to place the pen cursor while drawing. */
       trail?: Pt[];
+      /** Stays put while the drawing swings or spins (the beam a pendulum hangs from). */
+      fixed?: boolean;
     }
   | {
       type: "fill";
@@ -823,7 +825,10 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
       const parts: Part[] = [];
       // The drawing's own bounds: arrows, notes and the camera go to what's drawn, not to empty space around it.
       const bounds: Rect[] = [];
+      // Which parts each shape became (to find a pendulum's beam afterwards).
+      const ranges: [number, number][] = [];
       shapes.forEach((sh, i) => {
+        const first = parts.length;
         const a0 = (i / n) * span;
         const a1 = ((i + 1) / n) * span;
         const c = sh.color ? INK[sh.color] : color;
@@ -851,8 +856,22 @@ function buildElement(a: Action, rect: Rect, warnings: string[]): BoardElement[]
           ),
         );
         if (sh.head) parts.push(...strokeParts(roughLinear(sh.head, seed + i * 13, { stroke: c, strokeWidth: 3 }), c, 3, a0 + (a1 - a0) * 0.8, a1));
+        ranges[i] = [first, parts.length];
       });
       const art = union(bounds);
+      // A flat line across the very top (the beam a pendulum hangs from) stays put while the rest swings.
+      const beamY = art.y + Math.max(12, art.h * 0.08);
+      shapes.forEach((sh, i) => {
+        if (sh.text || sh.closed || sh.head || !ranges[i]) return;
+        const xs = sh.trail.map((q) => q[0]);
+        const ys = sh.trail.map((q) => q[1]);
+        const flat = Math.max(...xs) - Math.min(...xs) > 3 * (Math.max(...ys) - Math.min(...ys));
+        if (!flat || Math.max(...ys) > beamY || shapes.length < 2) return;
+        for (let k = ranges[i][0]; k < ranges[i][1]; k++) {
+          const part = parts[k];
+          if (part.type === "stroke") parts[k] = { ...part, fixed: true };
+        }
+      });
       let bbox = art;
       if (text) {
         // The caption sits just under the drawing, centred on it.

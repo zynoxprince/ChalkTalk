@@ -7,7 +7,7 @@ Type a topic, watch a two-minute lesson drawn and narrated just for you, and rai
 
 **[▶ Live demo](https://chalktalk-delta.vercel.app)** · [How it works](#how-it-works) · [Run it locally](#run-it-locally) · [Architecture notes](docs/ARCHITECTURE.md)
 
-<img src="docs/images/lesson.png" alt="A ChalkTalk lesson about the seasons: a hand-drawn whiteboard with the sun, two Earths on coloured spots, labelled arrows and a bar chart of daylight hours, with captions, playback controls and the tutor chat" width="900">
+<img src="docs/images/lesson.png" alt="A ChalkTalk lesson about the seasons: on a hand-drawn whiteboard, the tutor's own sketches show summer sun rays hitting the ground straight on and winter rays at a slant, over the labels 'Concentrated heat' and 'Spread-out heat', next to a sticky note; below are captions, playback controls with chapter markers, and the tutor panel with the lesson's chapters" width="900">
 
 </div>
 
@@ -29,8 +29,11 @@ It's built for self-directed learners (high-school and university students, and 
 
 - **Chat-first**: type any topic, pick Beginner / Intermediate / Advanced, or open a ready-made lesson that starts instantly.
 - **~2-minute lessons**: a hook, three short chapters (one whiteboard each) and a recap — written live by an LLM.
-- **A real whiteboard**: hand-drawn, colour-hatched boxes and circles, sticky notes, ~200 line-art drawings, arrows, step-by-step flows, cycles, function plots, bar charts and key numbers, plus annotations (highlight, circle, underline, cross out, tick, callouts, pulse).
-- **A board that moves**: a gentle camera follows the pen and pulls back to show the whole board; packets flow along arrows so you see which way things go; things travel across the board (a water drop up to the leaf, energy from the sun); bars grow and numbers count up; things pop in and bump when the tutor points at them. Still a steady 60 fps, and calm with reduced motion.
+- **A real whiteboard**: hand-drawn, colour-hatched boxes and circles, sticky notes, ~200 line-art drawings, the tutor's **own sketches** (figures built from simple shapes when no ready-made drawing fits, like sun rays hitting the ground straight on or at a slant), arrows, step-by-step flows, cycles, timelines, function plots, bar and pie charts, comparison tables and key numbers, plus annotations (highlight, circle, underline, cross out, tick, callouts, pulse).
+- **Demonstrations, not just diagrams**: things move the way they do in real life. The Earth orbits the sun, a pendulum swings, gears turn, gas molecules jiggle (faster when hot), an object glides to where it's going and a quantity grows.
+
+  <img src="docs/images/board-demos.gif" alt="Demonstrations on the board: the camera follows the pen as the sun and the Earth are drawn, the Earth starts travelling around the sun on a dotted orbit, a pendulum sketch swings from a fixed beam, red gas particles jiggle in a box and a gear turns" width="600">
+- **A board that moves**: a gentle camera follows the pen and pulls back to show the whole board; packets flow along arrows so you see which way things go; things travel across the board (a water drop up to the leaf, energy from the sun); bars grow, pie slices sweep open and numbers count up; things pop in and bump when the tutor points at them. Still a steady 60 fps, and calm with reduced motion.
 
   <img src="docs/images/board-motion.gif" alt="The board in motion: a packet runs along an arrow, the camera pans to a bar chart whose bars grow while their values count up, then pulls back to show the whole board" width="640">
 - **Voice in sync with the board**: each drawing is tied to a cue phrase in the narration; captions highlight the words as they're spoken.
@@ -80,11 +83,11 @@ flowchart LR
     P --> C["Captions · transcript"]
   end
   subgraph API["Next.js API routes on Vercel"]
-    O["/api/lesson/outline<br/>hook ∥ plan, streamed"]
-    CH["/api/lesson/chapter ×3<br/>streamed segments"]
+    O["/api/lesson/outline<br/>opener · hook ∥ plan + chapter 1, streamed"]
+    CH["/api/lesson/chapter ×2<br/>streamed segments"]
     R["/api/lesson/recap<br/>recap + quiz"]
     A["/api/ask<br/>answer with board context"]
-    V["/api/tts<br/>signed narration → audio"]
+    V["/api/tts<br/>signed narration → MP3"]
   end
   S --> O & CH & R & A & V
   O & CH & R & A -->|strict JSON schema| L[("LLM via OpenRouter")]
@@ -93,11 +96,11 @@ flowchart LR
 
 **1. A board language, not coordinates.** The model writes a small "board script": narration split into one-to-two-sentence segments, each with drawing actions such as `{ kind: "flow", items: [...], at: {col, row, w, h}, cue: "two-step process" }`. It decides *what* to draw and *when* (the cue phrase); ChalkTalk decides *where* and *how*. The schema is enforced with structured outputs, then a repair pass makes every action sensible (speakable narration, valid ids and references, known icons, cues that really occur in the narration).
 
-**2. A layout engine.** Elements are placed on a 12 × 6 grid under the title. Overlaps are resolved by moving elements to the nearest free cells, text is fitted with font metrics measured from the handwriting font, arrows attach to facing edges, and composites (lists, flows, cycles, plots, bar charts) are laid out by code. Strokes and colour hatching are generated with rough.js using a fixed seed per element, so the sketchy look never "boils" between frames. A planned virtual camera (a pure function of time, like everything else) eases in on whatever is being drawn and back out to the whole board.
+**2. A layout engine.** Elements are placed on a 12 × 6 grid under the title. Overlaps are resolved by moving elements to the nearest free cells, text is fitted with font metrics measured from the handwriting font, and arrows attach to facing edges (two arrows between the same pair run side by side; elements too close for a straight arrow get a curved one around the side). Composites (lists, flows, cycles, timelines, plots, bar and pie charts, tables) are laid out by code. The model's own sketches are parsed from numbers into fresh paths, so nothing it writes reaches the page as markup. Strokes and colour hatching are generated with rough.js using a fixed seed per element, so the sketchy look never "boils" between frames. A planned virtual camera (a pure function of time, like everything else) eases in on whatever is being drawn and back out to the whole board.
 
-**3. The board is a function of time.** A timeline compiler turns segments + measured audio durations into absolute start times for every stroke. Within a segment, a cue's time is estimated from its position in the text, weighted for the pauses punctuation adds. The renderer is a pure function, `frameAt(timeline, t)`, evaluated every animation frame from the **audio hardware clock** (compensating for output latency). Pause, seek, restart, background tabs and Bluetooth delay can't drift out of sync because nothing runs on timers.
+**3. The board is a function of time.** A timeline compiler turns segments + measured audio durations into absolute start times for every stroke. Within a segment, a cue's time is estimated from its position in the text, weighted for the pauses punctuation adds. The renderer is a pure function, `frameAt(timeline, t)`, evaluated every animation frame from the **audio hardware clock** (compensating for output latency). Demonstrations are too: an orbit, a swing or a cloud of particles is computed from `t` (particles from a seeded random generator), never stepped by a simulation. Pause, seek, restart, background tabs and Bluetooth delay can't drift out of sync because nothing runs on timers.
 
-**4. A fast start.** The first request makes two model calls in parallel: a tiny "hook" (the opening line and a hero drawing) and the lesson plan. Each is streamed to the browser the moment it's ready — the plan starts chapter generation immediately, the hook is voiced immediately — and neither waits for the other (a hook that lags the plan by more than 2.5 s is skipped). The agenda line is built from the plan in code. All three chapters are generated in parallel and **streamed**: each narration segment is validated, signed and sent to the browser the moment its JSON closes, so it can be voiced while the rest of the chapter is still being written. The player plays up to the "ready" edge and waits there only if it catches up. In production the tutor starts talking about 7 s after you click (6.5–7.3 s in our tests, Gemini voice included), with no pauses afterwards.
+**4. No waiting.** The tutor's first words don't wait for any model: a short opening line built from your topic is voiced the moment you click. Meanwhile two model calls run in parallel: a tiny "hook" (the opening question and a hero drawing) and one call that writes the lesson plan *and then* chapter 1. The plan is sent to the browser the moment its part of the JSON closes, which starts chapters 2 and 3 right away, while chapter 1 keeps streaming from the same call. Each line's narration goes out as soon as its text is written, before its drawings, so it's being voiced while the model is still drawing. Lines are voiced in lesson order (the next ones to be heard jump the queue) and travel as small MP3s (25–75 KB each). The player plays up to the "ready" edge and waits there only if it catches up. In production, on a connection throttled to 3 Mbps, the tutor starts talking about 4 s after you click and every chapter is voiced within about 30 s, long before playback reaches it.
 
 **5. Voice you can trust.** The narrator is Gemini TTS (through OpenRouter's speech endpoint), a true text-to-speech model that reads the script verbatim. If it's unavailable, an audio chat model takes over; because that one is conversational, ChalkTalk compares its transcript with the script, trims ad-libbed endings at the nearest pause and retries real mismatches. If no server voice is available at all, the browser's own voice reads the lesson. The speech endpoint only voices text signed (HMAC) by the server that generated it — the signature includes the voice — and responses are immutable and CDN-cacheable.
 
@@ -125,7 +128,7 @@ Each lesson also tackles the topic's most common **misconception** explicitly: t
 - **Next.js 16** (App Router, route handlers, streaming responses) · **React 19** · **TypeScript** · **Tailwind CSS 4**
 - **zod** for the board-script schema, validation and JSON-Schema export for structured outputs
 - **rough.js** (hand-drawn strokes), **Lucide** (line-art drawings), **Caveat** (handwriting font)
-- **Web Audio API** for sample-accurate, gapless narration and the master clock
+- **Web Audio API** for sample-accurate, gapless narration and the master clock; **LAME in WebAssembly** (`wasm-media-encoders`) to send speech as small MP3s
 - **OpenRouter** for every model: the lesson model, Gemini TTS for the narrator and the backup voice
 - **Vitest** for the engine, player and pipeline tests · deployed on **Vercel**
 
@@ -146,7 +149,7 @@ Other scripts:
 
 | Command | What it does |
 | --- | --- |
-| `pnpm test` | Unit tests (layout, timing, `frameAt`, player state machine, streaming parser, repair, speech checks) |
+| `pnpm test` | Unit tests (layout, drawing tools and motions, timing, `frameAt`, player state machine, streaming parsers, repair, speech checks) |
 | `pnpm lint` / `pnpm typecheck` | ESLint and TypeScript |
 | `pnpm build` | Production build |
 | `node scripts/generate-samples.mjs [slug]` | Regenerates the ready-made lessons through a running server (`BASE_URL`, default `http://localhost:3000`; needs `ffmpeg`) |
@@ -209,6 +212,7 @@ Keyboard shortcuts for every control, a proper ARIA slider for seeking, visible 
 - **Each line is voiced separately**, so tone can vary slightly from line to line; the backup narrator is a conversational model whose output is checked against the script.
 - **AI can be wrong.** Lessons are not fact-checked against sources; low-confidence answers are flagged, but treat lessons as explanations, not references.
 - **Crowded boards happen occasionally.** The layout engine prevents overlapping elements, but arrows can still cross other things on busy boards.
+- **Sketches are schematic.** The tutor draws its own figures from a few simple shapes, which suits physics and geometry better than anatomy or maps.
 - **Live lessons aren't saved or shareable yet**, and rate limits are in-memory per server instance.
 - English-first: the handwriting font covers Latin scripts; other scripts fall back to system fonts.
 

@@ -461,3 +461,18 @@ describe("arrow routing", () => {
     expect(end[1]).toBeLessThanOrEqual(leaf.bbox.y + leaf.bbox.h);
   });
 });
+
+describe("swinging sketches", () => {
+  it("keeps a pendulum's beam still while the string and bob swing", () => {
+    const { elements } = layoutScene([act({ id: "p", kind: "sketch", items: ["line 25 6 75 6", "line 50 6 50 68", "fill orange circle 50 78 11"], text: "Pendulum", at: { col: 4, row: 1, w: 3, h: 3 } })]);
+    const strokes = elements[0].parts.filter((q) => q.type === "stroke") as { fixed?: boolean; trail?: P2[] }[];
+    const outlines = strokes.filter((q) => q.trail);
+    expect(outlines.filter((q) => q.fixed)).toHaveLength(1);
+    const beam = outlines.find((q) => q.fixed)!;
+    expect(Math.abs(beam.trail![0][1] - beam.trail!.at(-1)![1])).toBeLessThan(1);
+    // Nothing else stays put, and without a beam nothing is fixed.
+    expect(outlines.filter((q) => !q.fixed).length).toBeGreaterThanOrEqual(2);
+    const noBeam = layoutScene([act({ id: "q", kind: "sketch", items: ["line 50 6 50 68", "circle 50 78 11"], at: { col: 4, row: 1, w: 3, h: 3 } })]);
+    expect(noBeam.elements[0].parts.some((q) => q.type === "stroke" && q.fixed)).toBe(false);
+  });
+});

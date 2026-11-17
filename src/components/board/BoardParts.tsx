@@ -290,10 +290,12 @@ interface ElementViewProps {
 function ElementViewImpl({ el, p, bump, age, since, motion, uid, interactive, focused, onAsk }: ElementViewProps) {
   const clickable = interactive && el.clickable && !!el.label && p >= 1 && !!onAsk;
   const view = (part: Part, i: number) => <PartView key={i} part={part} lp={local(part, p)} age={age} since={since} clipId={`${uid}-${el.id}-${i}`.replace(/[^a-zA-Z0-9_-]/g, "_")} />;
-  // A spinning or swinging element turns its drawing, while its caption stays upright.
+  // A spinning or swinging element turns its drawing, while its caption (and a pendulum's beam) stays put.
+  const stays = (part: Part) => part.type === "text" || (part.type === "stroke" && !!part.fixed);
   const body = motion?.turn ? (
     <>
-      <g transform={motion.turn}>{el.parts.map((part, i) => (part.type === "text" ? null : view(part, i)))}</g>
+      {el.parts.map((part, i) => (stays(part) && part.type !== "text" ? view(part, i) : null))}
+      <g transform={motion.turn}>{el.parts.map((part, i) => (stays(part) ? null : view(part, i)))}</g>
       {el.parts.map((part, i) => (part.type === "text" ? view(part, i) : null))}
     </>
   ) : (

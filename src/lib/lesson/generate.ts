@@ -34,10 +34,16 @@ export function openerLine(topic: string): string {
   for (const ch of t) h = (Math.imul(h, 31) + ch.charCodeAt(0)) | 0;
   const pick = <T,>(xs: T[]) => xs[Math.abs(h) % xs.length];
   const speakable = t.length >= 2 && t.length <= 80 && t.split(" ").length <= 14 && /^[\p{L}\p{N} ,'’()&/-]+$/u.test(t);
-  if (!speakable) return pick(["Great topic. Let's work through it together, one step at a time.", "Let's dig into this together, one step at a time."]);
+  // About five seconds of speech: long enough to cover writing and voicing the hook that follows.
+  if (!speakable) return pick(["Great topic. Let's work through it together on the board, one step at a time.", "Let's dig into this together. We'll build up the whole picture on the board, one step at a time."]);
   const T = t.charAt(0).toUpperCase() + t.slice(1);
-  if (QUESTION_START.test(t)) return pick([`Great question! ${T}? Let's work it out together.`, `${T}? Let's find out, one step at a time.`, `Good question. ${T}? Let's figure it out together.`]);
-  return pick([`${T}! Let's explore it together, one step at a time.`, `${T}. Let's break it down, step by step.`, `${T}: a great one to draw out. Let's dive in.`]);
+  if (QUESTION_START.test(t))
+    return pick([
+      `Great question! ${T}? Let's work it out together on the board, one step at a time.`,
+      `${T}? That's a great thing to wonder about. Let's find out, one step at a time.`,
+      `Good question. ${T}? Let's figure it out together, and draw it out as we go.`,
+    ]);
+  return pick([`${T}! Let's explore it together on the board, one step at a time.`, `${T}. A great one to draw out. Let's break it down, step by step.`, `${T}: let's dive in and build up the whole picture on the board together.`]);
 }
 
 /** The opening segment: voiced immediately while the hook and the plan are being written. */

@@ -48,7 +48,7 @@ export function BoardStage(p: BoardStageProps) {
       {mode.kind === "planning" && <PlanningOverlay topic={mode.topic} />}
 
       {mode.kind === "lesson" && p.state === "buffering" && (
-        <div className="pointer-events-none absolute inset-x-0 bottom-4 flex justify-center">
+        <div className="appear-late pointer-events-none absolute inset-x-0 bottom-4 flex justify-center">
           <span className="flex items-center gap-2 rounded-full bg-ink/85 px-3.5 py-1.5 text-sm text-white shadow-lg backdrop-blur">
             <Icon name="loader" className="size-4 animate-spin" />
             The tutor is preparing the next part…
