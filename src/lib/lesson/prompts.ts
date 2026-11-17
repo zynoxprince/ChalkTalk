@@ -118,6 +118,12 @@ Fill in:
 - chapters: exactly 3, building on each other (intuition → how it works → example or application). For each: title (2–5 words, will be read aloud in a list), goal (one sentence), visual_idea (what the board will show, naming element kinds), misconception (the common wrong belief to tackle in this chapter, or null). Exactly one chapter should tackle the most common misconception about this topic.`;
 }
 
+/** The plan and chapter 1 in one call (the plan is streamed first, so chapters 2 and 3 can start early). */
+export function planPrompt(topic: string, level: Level) {
+  return `${outlinePrompt(topic, level).replace("Plan a two-minute whiteboard lesson.", "Plan a two-minute whiteboard lesson, then write its first chapter.")}
+- first_chapter: chapter 1 written in full, following your plan: 3 or 4 segments with 70–95 words of narration in total (about 30 seconds), each 1–2 sentences with 1–4 actions. It follows the intro directly, so get straight into it. If chapter 1 tackles the misconception, show the wrong idea on the board, cross_out it, then show the right idea and check it. The board starts empty: build one clear, well-spaced board for this chapter. If you set refusal, leave first_chapter.segments empty.`;
+}
+
 export function chapterPrompt(topic: string, level: Level, outline: Outline, index: number) {
   const ch: ChapterPlan = outline.chapters[index];
   const prev = index > 0 ? outline.chapters[index - 1] : null;

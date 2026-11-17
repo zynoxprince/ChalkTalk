@@ -1,16 +1,16 @@
 import { config } from "@/lib/server/env";
 import { AIError, generateStructured, streamStructured } from "@/lib/server/openrouter";
 import { signNarration } from "@/lib/server/sign";
-import { askPrompt, chapterPrompt, hookPrompt, outlinePrompt, recapPrompt, SYSTEM_PROMPT, type AskContext } from "./prompts";
+import { askPrompt, chapterPrompt, hookPrompt, outlinePrompt, planPrompt, recapPrompt, SYSTEM_PROMPT, type AskContext } from "./prompts";
 import { repairSegments } from "./repair";
-import { ArrayItemExtractor } from "./stream-json";
+import { PlanStream, SegmentStream, type EarlyVoice } from "./segment-stream";
 import {
   AnswerSchema,
   ChapterSchema,
   HookSchema,
   OutlineSchema,
+  PlanSchema,
   RecapSchema,
-  SegmentSchema,
   type AnswerMode,
   type Segment,
   type Level,
@@ -20,6 +20,31 @@ import {
 } from "./schema";
 
 /** Server-side lesson generation. Used by the API routes and the sample script. */
+
+const QUESTION_START = /^(how|why|what|when|where|who|which|can|could|does|do|did|is|are|was|were|should|would|will|if)\b/i;
+
+/**
+ * The tutor's first words, built from the topic in code so they can be voiced
+ * the instant the learner clicks, before any model has answered. Topics that
+ * wouldn't read well aloud get a generic line.
+ */
+export function openerLine(topic: string): string {
+  const t = topic.replace(/\s+/g, " ").trim().replace(/[?.!\s]+$/, "");
+  let h = 0;
+  for (const ch of t) h = (Math.imul(h, 31) + ch.charCodeAt(0)) | 0;
+  const pick = <T,>(xs: T[]) => xs[Math.abs(h) % xs.length];
+  const speakable = t.length >= 2 && t.length <= 80 && t.split(" ").length <= 14 && /^[\p{L}\p{N} ,'’()&/-]+$/u.test(t);
+  if (!speakable) return pick(["Great topic. Let's work through it together, one step at a time.", "Let's dig into this together, one step at a time."]);
+  const T = t.charAt(0).toUpperCase() + t.slice(1);
+  if (QUESTION_START.test(t)) return pick([`Great question! ${T}? Let's work it out together.`, `${T}? Let's find out, one step at a time.`, `Good question. ${T}? Let's figure it out together.`]);
+  return pick([`${T}! Let's explore it together, one step at a time.`, `${T}. Let's break it down, step by step.`, `${T}: a great one to draw out. Let's dive in.`]);
+}
+
+/** The opening segment: voiced immediately while the hook and the plan are being written. */
+export function openerSegment(topic: string): Segment {
+  const narration = openerLine(topic);
+  return { id: "intro-0", narration, sig: signNarration(narration), actions: [] };
+}
 
 /** A tiny, fast call: the opening line and a hero drawing, voiced while the plan is written. */
 export async function generateHook(topic: string, level: Level): Promise<{ refusal: string | null; segment: Segment | null }> {
@@ -44,7 +69,8 @@ export async function generateHook(topic: string, level: Level): Promise<{ refus
         ],
       },
     ],
-    { sceneId: "intro", sign: signNarration, maxSegments: 1 },
+    // intro-0 is the instant opener; the hook is the second line.
+    { sceneId: "intro", sign: signNarration, maxSegments: 1, startIndex: 1 },
   );
   return { refusal: null, segment: segment ?? null };
 }
@@ -98,14 +124,15 @@ export async function streamChapter(
   outline: Outline,
   index: number,
   onSegment: (segment: Segment) => void,
+  /** Called as soon as a segment's narration is complete, before its drawings are: voicing can start early. */
+  onNarration?: (voice: EarlyVoice) => void,
 ): Promise<{ id: string; title: string; count: number }> {
   const plan = outline.chapters[index];
   if (!plan) throw new AIError("Unknown chapter.", 400, false);
   const id = `c${index + 1}`;
-  const seen = new Set<string>();
   let count = 0;
   for (let attempt = 1; attempt <= 2 && count === 0; attempt++) {
-    const extractor = new ArrayItemExtractor("segments");
+    const stream = new SegmentStream(id, signNarration, { onSegment, onNarration });
     try {
       await streamStructured(
         {
@@ -118,32 +145,62 @@ export async function streamChapter(
           reasoning: config.lessonReasoning,
           label: `chapter ${index + 1}`,
         },
-        (chunk) => {
-          for (const raw of extractor.push(chunk)) {
-            if (count >= 5) return;
-            let json: unknown;
-            try {
-              json = JSON.parse(raw);
-            } catch {
-              continue;
-            }
-            const parsed = SegmentSchema.safeParse(json);
-            if (!parsed.success) continue;
-            for (const seg of repairSegments([parsed.data], { sceneId: id, sign: signNarration, startIndex: count, seen })) {
-              onSegment(seg);
-              count++;
-            }
-          }
-        },
+        (chunk) => stream.push(chunk),
       );
     } catch (e) {
       // Keep what already streamed; only retry if nothing usable arrived.
-      if (count > 0) break;
+      if (stream.count > 0) {
+        count = stream.count;
+        break;
+      }
       if (attempt === 2 || (e instanceof AIError && !e.retryable)) throw e;
     }
+    count = stream.count;
   }
   if (count === 0) throw new AIError("A chapter came back empty. Please try again.");
   return { id, title: plan.title.trim().slice(0, 60), count };
+}
+
+/**
+ * The plan and chapter 1 in one streamed call. `onOutline` fires the moment the
+ * plan is complete (so chapters 2 and 3 can start), then chapter 1's segments
+ * stream in as they're written. Returns how many chapter-1 segments arrived:
+ * if none did, the caller asks for chapter 1 separately.
+ */
+export async function streamPlan(
+  topic: string,
+  level: Level,
+  handlers: { onOutline: (outline: Outline) => void; onSegment: (segment: Segment) => void; onNarration?: (voice: EarlyVoice) => void },
+): Promise<{ outline: Outline; chapterOne: number }> {
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const parser = new PlanStream(signNarration, handlers);
+    try {
+      await streamStructured(
+        {
+          model: config.lessonModel,
+          system: SYSTEM_PROMPT,
+          user: planPrompt(topic, level),
+          schema: PlanSchema,
+          name: "lesson_plan",
+          maxTokens: 12000,
+          reasoning: config.lessonReasoning,
+          label: "plan",
+        },
+        (chunk) => parser.push(chunk),
+      );
+    } catch (e) {
+      lastError = e;
+      // Once the plan is out, keep going with whatever chapter 1 managed.
+      if (parser.outline) return { outline: parser.outline, chapterOne: parser.chapterOne.count };
+      if (e instanceof AIError && !e.retryable) throw e;
+      continue;
+    }
+    const outline = parser.finish();
+    if (outline && (outline.refusal || outline.chapters.length >= 2)) return { outline, chapterOne: parser.chapterOne.count };
+    lastError = new AIError("The lesson plan came back incomplete. Please try again.");
+  }
+  throw lastError instanceof Error ? lastError : new AIError("The lesson plan could not be written. Please try again.");
 }
 
 export async function generateRecap(

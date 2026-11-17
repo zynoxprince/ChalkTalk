@@ -127,6 +127,13 @@ export const ChapterSchema = z.object({
 });
 export type GeneratedChapter = z.infer<typeof ChapterSchema>;
 
+/**
+ * The plan and chapter 1 in one streamed call: the plan arrives first (fields in
+ * this order), then chapter 1 as it's written, saving a whole model round trip
+ * on the path to the first chapter.
+ */
+export const PlanSchema = OutlineSchema.extend({ first_chapter: ChapterSchema });
+
 export const QuizItemSchema = z.object({
   question: z.string(),
   options: z.array(z.string()),

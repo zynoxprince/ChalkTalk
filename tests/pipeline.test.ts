@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ArrayItemExtractor } from "@/lib/lesson/stream-json";
+import { PlanStream, SegmentStream } from "@/lib/lesson/segment-stream";
+import { openerLine } from "@/lib/lesson/generate";
 import { cleanNarration, repairSegments } from "@/lib/lesson/repair";
 import { compareTranscript } from "@/lib/server/speech";
 import { toPcm } from "@/lib/server/speech";
@@ -159,5 +161,61 @@ describe("repair of the newer board tools", () => {
       { sceneId: "c1", sign: () => "" },
     );
     expect(seg.actions[0]).toMatchObject({ kind: "trace", from: "sun", to: "leaf", target: null });
+  });
+});
+
+describe("streamed plan with chapter 1", () => {
+  const chapter = (t: string) => ({ title: t, goal: "g", visual_idea: "v", misconception: null });
+  const plan = {
+    refusal: null,
+    title: "How Wings Work",
+    summary: "s",
+    scope_note: null,
+    clarify: null,
+    chapters: [chapter("Lift"), chapter("Drag"), chapter("Thrust")],
+    first_chapter: {
+      segments: [
+        { narration: "Air pushes the wing up.", actions: [act({ id: "w", kind: "box", text: "Wing", cue: "the wing", at: { col: 1, row: 1, w: 3, h: 1 } })] },
+        { narration: "That push is called lift.", actions: [] },
+      ],
+    },
+  };
+
+  it("emits the plan the moment its chapters close, then chapter 1 lines, each voiced early", () => {
+    const json = JSON.stringify(plan);
+    const events: string[] = [];
+    const p = new PlanStream((n) => `sig:${n.length}`, {
+      onOutline: (o) => events.push(`plan:${o.chapters.length}`),
+      onSegment: (s) => events.push(`segment:${s.id}`),
+      onNarration: (v) => events.push(`voice:${v.id}:${v.narration}`),
+    });
+    for (let i = 0; i < json.length; i += 7) p.push(json.slice(i, i + 7));
+    expect(p.finish()?.title).toBe("How Wings Work");
+    expect(events).toEqual(["plan:3", "voice:c1-0:Air pushes the wing up.", "segment:c1-0", "voice:c1-1:That push is called lift.", "segment:c1-1"]);
+  });
+
+  it("still finds the plan at the end if it never closed early", () => {
+    const p = new PlanStream(() => "", { onOutline: () => {}, onSegment: () => {} });
+    p.push(JSON.stringify({ ...plan, first_chapter: { segments: [] } }));
+    expect(p.finish()?.chapters.length).toBe(3);
+  });
+
+  it("voices early lines with the same signature the finished segment gets", () => {
+    const voiced: string[] = [];
+    const segs: string[] = [];
+    const s = new SegmentStream("c2", (n) => `sig:${n}`, { onSegment: (seg) => segs.push(seg.sig), onNarration: (v) => voiced.push(v.sig) });
+    const json = JSON.stringify({ segments: [{ narration: "**Light** is fast.", actions: [] }] });
+    for (const ch of json) s.push(ch);
+    expect(voiced).toEqual(["sig:Light is fast."]);
+    expect(segs).toEqual(voiced);
+  });
+});
+
+describe("opening line", () => {
+  it("echoes question topics and stays generic for unspeakable ones", () => {
+    expect(openerLine("how do airplanes fly")).toMatch(/How do airplanes fly\?/);
+    expect(openerLine("photosynthesis")).toMatch(/^Photosynthesis/);
+    expect(openerLine("E=mc^2 derivation")).not.toMatch(/mc/);
+    expect(openerLine("how do airplanes fly")).toBe(openerLine("how do airplanes fly"));
   });
 });

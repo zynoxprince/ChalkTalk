@@ -16,6 +16,16 @@ export class ArrayItemExtractor {
 
   constructor(private readonly key: string) {}
 
+  /** The item currently being written (incomplete), if any. */
+  partial(): string | null {
+    return this.itemStart >= 0 ? this.buf.slice(this.itemStart) : null;
+  }
+
+  /** Once the array has closed: the index just past its `]` in everything pushed so far. */
+  end(): number {
+    return this.done ? this.pos : -1;
+  }
+
   push(chunk: string): string[] {
     this.buf += chunk;
     const items: string[] = [];

@@ -75,6 +75,28 @@ function sampleRateOf(res: Response): number {
   return rate >= 8000 && rate <= 96000 ? rate : 24000;
 }
 
+/** Decodes a speech response: MP3 (what the app asks for) or raw 16-bit PCM. */
+function toAudioBuffer(ctx: AudioContext, res: Response, bytes: ArrayBuffer): Promise<AudioBuffer> {
+  const type = res.headers.get("content-type") ?? "";
+  if (!type.includes("audio/mpeg") && !res.url.endsWith(".mp3")) return Promise.resolve(pcm16ToBuffer(ctx, bytes, sampleRateOf(res)));
+  // The callback form also works on older Safari, where decodeAudioData doesn't return a promise.
+  return new Promise((resolve, reject) => {
+    const p = ctx.decodeAudioData(bytes, resolve, reject) as Promise<AudioBuffer> | undefined;
+    p?.then(resolve, reject);
+  });
+}
+
+/** One line being voiced (shared by every segment with the same text). */
+interface VoiceJob {
+  url: string;
+  /** Lesson order: scene, then line. Lower is needed sooner. */
+  order: number;
+  segments: Segment[];
+  state: "queued" | "running" | "done";
+  /** The audio, or null if it couldn't be voiced. */
+  buffer: AudioBuffer | null;
+}
+
 /** POSTs JSON and returns the response for streaming, with friendly errors. */
 async function openStream(path: string, body: unknown, signal: AbortSignal): Promise<Response> {
   let res: Response;
@@ -117,8 +139,8 @@ export class LessonSession {
   private ctx: AudioContext | null;
   private audio = new Map<string, AudioInfo>();
   private buffers = new Map<string, AudioBuffer>();
-  private order = new Map<string, number>();
-  private queue: Segment[] = [];
+  private jobs = new Map<string, VoiceJob>();
+  private queued: VoiceJob[] = [];
   private active = 0;
   private aborter = new AbortController();
   private listeners = new Set<() => void>();
@@ -199,16 +221,31 @@ export class LessonSession {
       this.recompile();
     };
 
+    // Chapter 1 is written by the same call as the plan and streams in on this response.
+    let chapterOne = 0;
     try {
       const res = await openStream("/api/lesson/outline", { topic, level }, this.aborter.signal);
-      for await (const msg of readNdjson<{ intro?: Segment; outline?: Outline; done?: boolean; refusal?: string; error?: string }>(res)) {
+      for await (const msg of readNdjson<{
+        intro?: Segment;
+        outline?: Outline;
+        voice?: { id: string; narration: string; sig: string };
+        segment?: Segment;
+        introDone?: boolean;
+        done?: boolean;
+        refusal?: string;
+        error?: string;
+      }>(res)) {
         if (msg.refusal) {
           this.set({ phase: "error", refusal: msg.refusal, error: msg.refusal });
           return;
         }
-        if (msg.error) throw new ApiError(msg.error, 502);
+        if (msg.error) {
+          // A failure after the plan only costs chapter 1, which can be asked for separately.
+          if (outline) break;
+          throw new ApiError(msg.error, 502);
+        }
         if (msg.outline) {
-          // The plan: lay out the chapter list and start writing all chapters now.
+          // The plan: lay out the chapter list and start writing chapters 2 and 3 now.
           outline = msg.outline;
           this.outline = outline;
           this.set({
@@ -224,7 +261,7 @@ export class LessonSession {
             ],
           });
           const plan = outline;
-          chapters = Promise.all(plan.chapters.map((_, i) => this.loadChapter(i))).then(() => undefined);
+          chapters = Promise.all(plan.chapters.map((_, i) => (i === 0 ? Promise.resolve() : this.loadChapter(i)))).then(() => undefined);
           this.recompile();
         }
         if (msg.intro) {
@@ -232,6 +269,18 @@ export class LessonSession {
           introSegments = [...introSegments, msg.intro];
           this.enqueue([msg.intro]);
           publish();
+        }
+        if (msg.introDone && !introDone) {
+          introDone = true;
+          publish();
+        }
+        if (msg.voice) this.prefetch(msg.voice);
+        if (msg.segment && outline) {
+          chapterOne++;
+          const cur = this.state.scenes[1].scene;
+          this.replaceScene(1, { scene: { ...cur, segments: [...cur.segments, msg.segment] }, status: "streaming" });
+          this.enqueue([msg.segment]);
+          this.recompile();
         }
         if (msg.done) {
           introDone = true;
@@ -247,6 +296,12 @@ export class LessonSession {
       if ((e as Error).name !== "AbortError") this.set({ phase: "error", error: (e as Error).message });
       return;
     }
+    if (chapterOne > 0) {
+      this.replaceScene(1, { scene: this.state.scenes[1].scene, status: "ready" });
+      this.recompile();
+    } else {
+      await this.loadChapter(0);
+    }
     await chapters;
     await this.loadRecap();
   }
@@ -260,8 +315,11 @@ export class LessonSession {
       const res = await openStream("/api/lesson/chapter", { topic, level, outline: this.outline, index }, this.aborter.signal);
       // NDJSON: one segment per line as soon as the model has written it.
       let streamError: string | null = null;
-      for await (const msg of readNdjson<{ segment?: Segment; done?: boolean; error?: string }>(res)) {
-        if (msg.segment) {
+      for await (const msg of readNdjson<{ voice?: { id: string; narration: string; sig: string }; segment?: Segment; done?: boolean; error?: string }>(res)) {
+        if (msg.voice) {
+          // The line's text is written; its drawings are still coming. Start voicing now.
+          this.prefetch(msg.voice);
+        } else if (msg.segment) {
           received++;
           const cur = this.state.scenes[slot].scene;
           this.replaceScene(slot, { scene: { ...cur, segments: [...cur.segments, msg.segment] }, status: "streaming" });
@@ -348,13 +406,42 @@ export class LessonSession {
   }
 
   /* ------------------------------- voice --------------------------------- */
+  //
+  // Every line is voiced through a small scheduler. Jobs are keyed by audio URL,
+  // so a line whose text arrived early ("voice" message) and the full segment
+  // that follows share one request. Jobs run in lesson order, a few at a time;
+  // the next lines the learner is about to hear may run beyond that limit, so
+  // they never wait behind lines from later chapters.
+
+  private urlFor(narration: string, sig: string, id?: string) {
+    return this.audioBase && id ? `${this.audioBase}/${id}.mp3` : `/api/tts?t=${encodeURIComponent(narration)}&s=${encodeURIComponent(sig)}&f=mp3`;
+  }
+
+  private jobFor(url: string, order: number): VoiceJob {
+    let job = this.jobs.get(url);
+    if (!job) {
+      job = { url, order, segments: [], state: "queued", buffer: null };
+      this.jobs.set(url, job);
+      this.queued.push(job);
+    } else {
+      job.order = Math.min(job.order, order);
+    }
+    return job;
+  }
+
+  /** A line's text arrived before its drawings: start voicing it now. */
+  private prefetch(v: { id: string; narration: string; sig: string }) {
+    if (!this.ctx || this.ttsDown || this.disposed) return;
+    this.jobFor(this.urlFor(v.narration, v.sig), this.globalIndex(v.id));
+    this.pump();
+  }
 
   private enqueue(segments: Segment[]) {
     for (const seg of segments) {
-      if (!this.order.has(seg.id)) this.order.set(seg.id, this.globalIndex(seg.id));
-      this.queue.push(seg);
+      const job = this.jobFor(this.urlFor(seg.narration, seg.sig, seg.id), this.globalIndex(seg.id));
+      job.segments.push(seg);
+      if (job.state === "done") this.settleSegment(seg, job.buffer);
     }
-    this.queue.sort((a, b) => (this.order.get(a.id) ?? 0) - (this.order.get(b.id) ?? 0));
     this.set({ voice: { ...this.state.voice, total: this.state.voice.total + segments.length } });
     this.pump();
   }
@@ -365,51 +452,81 @@ export class LessonSession {
     return sceneOrder * 100 + (Number.isFinite(n) ? n : 0);
   }
 
+  /** Lesson order of the line being played now (lines before it are no longer urgent). */
+  private playheadOrder(): number {
+    const tl = this.state.timeline;
+    if (!tl) return -1;
+    const t = this.player.getSnapshot().time;
+    let current = tl.segments[0];
+    for (const s of tl.segments) if (s.start <= t + 0.05) current = s;
+    return current ? this.globalIndex(current.id) : -1;
+  }
+
   private pump() {
-    const limit = this.audioBase ? 6 : 4;
-    while (this.active < limit && this.queue.length) {
-      const seg = this.queue.shift()!;
-      this.active++;
-      this.voice(seg).finally(() => {
-        this.active--;
-        this.pump();
-      });
+    if (this.disposed) return;
+    const base = this.audioBase ? 6 : 5;
+    const max = base + 3;
+    this.queued.sort((a, b) => a.order - b.order);
+    // The next two lines to be heard (from the playhead on) are urgent.
+    const from = this.playheadOrder();
+    const upcoming = [...this.jobs.values()].filter((j) => j.state !== "done" && j.order >= from).map((j) => j.order).sort((a, b) => a - b);
+    const urgentUpTo = upcoming[1] ?? upcoming[0] ?? -1;
+    while (this.queued.length) {
+      const next = this.queued[0];
+      const urgent = next.order >= from && next.order <= urgentUpTo;
+      if (this.active >= base && !(urgent && this.active < max)) break;
+      this.queued.shift();
+      void this.run(next);
     }
   }
 
-  private async voice(seg: Segment) {
-    let ok = false;
+  private async run(job: VoiceJob) {
+    job.state = "running";
+    this.active++;
+    let buffer: AudioBuffer | null = null;
     if (this.ctx && !this.ttsDown) {
-      for (let attempt = 1; attempt <= 2 && !ok && !this.disposed; attempt++) {
+      for (let attempt = 1; attempt <= 2 && !buffer && !this.disposed; attempt++) {
         try {
-          const buffer = await this.fetchAudio(seg);
-          this.buffers.set(seg.id, buffer);
-          this.audio.set(seg.id, { duration: buffer.duration, ok: true });
-          this.player.setAudio(seg.id, buffer);
-          ok = true;
+          buffer = await this.fetchAudio(job.url);
         } catch (e) {
-          if ((e as Error).name === "AbortError") return;
+          if ((e as Error).name === "AbortError") {
+            this.active--;
+            return;
+          }
           if (e instanceof ApiError && e.status === 503) this.ttsDown = true;
           if (e instanceof ApiError && (e.status === 403 || e.status === 400 || e.status === 503)) break;
         }
       }
     }
-    if (!ok) this.audio.set(seg.id, { duration: estimateDuration(seg.narration), ok: false });
-    const v = this.state.voice;
-    this.set({ voice: { ...v, ready: v.ready + 1, failed: v.failed + (ok ? 0 : 1) }, degraded: this.state.degraded || !ok });
-    this.recompile();
+    job.state = "done";
+    job.buffer = buffer;
+    this.active--;
+    for (const seg of job.segments) this.settleSegment(seg, buffer);
+    if (job.segments.length) this.recompile();
+    this.pump();
   }
 
-  private async fetchAudio(seg: Segment): Promise<AudioBuffer> {
+  private settleSegment(seg: Segment, buffer: AudioBuffer | null) {
+    if (this.audio.has(seg.id)) return;
+    if (buffer) {
+      this.buffers.set(seg.id, buffer);
+      this.audio.set(seg.id, { duration: buffer.duration, ok: true });
+      this.player.setAudio(seg.id, buffer);
+    } else {
+      this.audio.set(seg.id, { duration: estimateDuration(seg.narration), ok: false });
+    }
+    const v = this.state.voice;
+    this.set({ voice: { ...v, ready: v.ready + 1, failed: v.failed + (buffer ? 0 : 1) }, degraded: this.state.degraded || !buffer });
+  }
+
+  private async fetchAudio(url: string): Promise<AudioBuffer> {
     if (!this.ctx) throw new Error("no audio");
-    const url = this.audioBase ? `${this.audioBase}/${seg.id}.mp3` : `/api/tts?t=${encodeURIComponent(seg.narration)}&s=${encodeURIComponent(seg.sig)}`;
     const res = await fetch(url, { signal: this.aborter.signal });
     if (!res.ok) {
       const j = await res.json().catch(() => ({}));
       throw new ApiError(j.error ?? `Voice failed (${res.status})`, res.status);
     }
-    const bytes = await res.arrayBuffer();
-    return this.audioBase ? await this.ctx.decodeAudioData(bytes) : pcm16ToBuffer(this.ctx, bytes, sampleRateOf(res));
+    return toAudioBuffer(this.ctx, res, await res.arrayBuffer());
   }
 
   /* ------------------------------ timeline ------------------------------- */
@@ -491,9 +608,9 @@ export function playAnswer(scene: Scene, base: BoardElement[], ctx: AudioContext
     scene.segments.map(async (seg) => {
       try {
         if (!ctx) throw new Error("no audio");
-        const res = await fetch(`/api/tts?t=${encodeURIComponent(seg.narration)}&s=${encodeURIComponent(seg.sig)}`);
+        const res = await fetch(`/api/tts?t=${encodeURIComponent(seg.narration)}&s=${encodeURIComponent(seg.sig)}&f=mp3`);
         if (!res.ok) throw new Error("voice failed");
-        const buffer = pcm16ToBuffer(ctx, await res.arrayBuffer(), sampleRateOf(res));
+        const buffer = await toAudioBuffer(ctx, res, await res.arrayBuffer());
         audio.set(seg.id, { duration: buffer.duration, ok: true });
         player.setAudio(seg.id, buffer);
       } catch {

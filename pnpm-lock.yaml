@@ -23,6 +23,9 @@ importers:
       roughjs:
         specifier: ^4.6.6
         version: 4.6.6
+      wasm-media-encoders:
+        specifier: 0.7.0
+        version: 0.7.0
       zod:
         specifier: ^4.6.7
         version: 4.6.7
@@ -2281,6 +2284,10 @@ packages:
         optional: true
       jsdom:
         optional: true
+
+  wasm-media-encoders@0.7.0:
+    resolution: {integrity: sha512-Sp4wUasgxOK/IFfNhpon6LQQgYGwtpxyV4isjGIe1rvhnJL3w2KYr4f+CdqDNtGPDcgCDRY+uBanVfSx6Si0WQ==}
+    engines: {node: '>= 10'}
 
   which-boxed-primitive@1.1.1:
     resolution: {integrity: sha512-TbX3mj8n0odCBFVlY8AxkqcHASw3L60jIuF8jFP78az3C2YhmGvqbHBpAjTRH2/xqYunrJ9g1jSyjCjpoWzIAA==}
@@ -4669,6 +4676,10 @@ snapshots:
       '@types/node': 20.19.43
     transitivePeerDependencies:
       - msw
+
+  wasm-media-encoders@0.7.0:
+    dependencies:
+      '@swc/helpers': 0.5.23
 
   which-boxed-primitive@1.1.1:
     dependencies:

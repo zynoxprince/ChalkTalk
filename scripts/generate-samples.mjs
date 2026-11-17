@@ -54,23 +54,27 @@ async function generate({ slug, topic, level, emoji }) {
   const t0 = Date.now();
   console.log(`\n▶ ${slug}: "${topic}" (${level})`);
 
-  // 1. Plan + intro lines (hook if it was quick, then the agenda), as the app streams them
+  // 1. Intro lines (opener, hook, agenda), the plan and chapter 1, as the app streams them
   let outline = null;
   const introSegments = [];
+  const chapterOne = [];
   for await (const msg of ndjson(await post("/api/lesson/outline", { topic, level, waitForHook: true }))) {
-    if (msg.error || msg.refusal) throw new Error(msg.error ?? msg.refusal);
+    if (msg.refusal || (msg.error && !outline)) throw new Error(msg.error ?? msg.refusal);
     if (msg.outline) outline = msg.outline;
     if (msg.intro) introSegments.push(msg.intro);
+    if (msg.segment) chapterOne.push(msg.segment);
   }
   if (!outline || !introSegments.length) throw new Error("no outline");
-  if (introSegments.length < 2) throw new Error("the opening line failed; try again");
+  // Opener, hook and agenda.
+  if (introSegments.length < 3) throw new Error("the opening line failed; try again");
   const title = topic.charAt(0).toUpperCase() + topic.slice(1);
   const intro = { id: "intro", kind: "intro", title, segments: introSegments };
   console.log(`  plan: ${outline.title} — ${outline.chapters.map((c) => c.title).join(" | ")}`);
 
-  // 2. Chapters (in parallel)
+  // 2. Chapters 2 and 3 in parallel (chapter 1 came with the plan, unless it failed)
   const chapters = await Promise.all(
     outline.chapters.map(async (c, index) => {
+      if (index === 0 && chapterOne.length) return { id: "c1", kind: "chapter", title: c.title, segments: chapterOne };
       const segments = [];
       for await (const msg of ndjson(await post("/api/lesson/chapter", { topic, level, outline, index }))) {
         if (msg.segment) segments.push(msg.segment);

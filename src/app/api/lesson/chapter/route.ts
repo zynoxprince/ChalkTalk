@@ -7,8 +7,9 @@ export const maxDuration = 60;
 
 /**
  * Step 2: write one chapter (the client requests all three in parallel).
- * Streams NDJSON — one `{"segment": …}` line per narration segment as soon as
- * it's written, then `{"done": true}` — so playback can start early.
+ * Streams NDJSON — `{"voice": {id, narration, sig}}` as soon as a line's text is
+ * written, `{"segment": …}` once its drawings are too, then `{"done": true}` —
+ * so voicing and playback can start early.
  */
 export const POST = handle(async (req) => {
   const wait = rateLimit(req, "chapter", 45, 60 * 60 * 1000);
@@ -20,7 +21,15 @@ export const POST = handle(async (req) => {
     async start(controller) {
       const send = (obj: unknown) => controller.enqueue(encoder.encode(`${JSON.stringify(obj)}\n`));
       try {
-        const result = await streamChapter(topic, level, outline, index, (segment) => send({ segment }));
+        const result = await streamChapter(
+          topic,
+          level,
+          outline,
+          index,
+          (segment) => send({ segment }),
+          // Each line's text goes out as soon as it's written, so it can be voiced before its drawings arrive.
+          (voice) => send({ voice }),
+        );
         send({ done: true, title: result.title, count: result.count });
       } catch (e) {
         console.warn(`[chapter ${index + 1}] failed:`, e instanceof Error ? e.message : e);
