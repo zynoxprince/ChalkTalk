@@ -1,26 +1,78 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --paper: #f7f5f0;
+  --board: #fdfcf8;
+  --ink: #1f2937;
+  --muted: #6b7280;
+  --accent: #4f46e5;
+  --accent-soft: #eef2ff;
+  --marker: #facc15;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-paper: var(--paper);
+  --color-board: var(--board);
+  --color-ink: var(--ink);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-marker: var(--marker);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-hand: var(--font-hand);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  background: var(--paper);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+.board-text {
+  font-family: var(--font-hand), "Segoe Print", "Comic Sans MS", cursive;
+  letter-spacing: 0.01em;
+}
+
+/* Clickable things on the board: a soft outline on hover / focus. */
+.board-el {
+  cursor: pointer;
+  outline: none;
+}
+.board-el-hit {
+  fill: transparent;
+  stroke: transparent;
+  stroke-width: 3;
+  stroke-dasharray: 10 8;
+  transition: fill 120ms ease, stroke 120ms ease;
+}
+.board-el:hover .board-el-hit,
+.board-el:focus-visible .board-el-hit,
+.board-el.is-focused .board-el-hit {
+  fill: rgb(79 70 229 / 0.06);
+  stroke: rgb(79 70 229 / 0.55);
+}
+
+/* Hand-drawn underline used in headings. */
+.marker-underline {
+  background-image: linear-gradient(transparent 62%, rgb(250 204 21 / 0.55) 62%, rgb(250 204 21 / 0.55) 92%, transparent 92%);
+}
+
+@keyframes ct-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+.animate-float {
+  animation: ct-float 2.4s ease-in-out infinite;
+}
+
+@keyframes ct-dash {
+  to { stroke-dashoffset: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-float { animation: none; }
 }
