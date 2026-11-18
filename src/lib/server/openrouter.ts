@@ -60,6 +60,12 @@ function jsonSchemaFor(schema: z.ZodType) {
   return s;
 }
 
+/** Provider routing: the preferred endpoints first (see config.modelProviders), any other as a fallback. */
+export function routing(model: string) {
+  const order = config.modelProviders(model);
+  return order?.length ? { order, allow_fallbacks: true, require_parameters: true } : { require_parameters: true };
+}
+
 function extractJson(content: string): unknown {
   const trimmed = content.trim().replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
   return JSON.parse(trimmed);
@@ -86,7 +92,7 @@ export async function generateStructured<T>(req: StructuredRequest<T>): Promise<
           max_tokens: req.maxTokens ?? 8000,
           reasoning: { effort: req.reasoning ?? "low", exclude: true },
           response_format: { type: "json_schema", json_schema: { name: req.name, strict: true, schema: jsonSchemaFor(req.schema) } },
-          provider: { require_parameters: true },
+          provider: routing(req.model),
         }),
       });
     } catch (e) {
@@ -108,7 +114,7 @@ export async function generateStructured<T>(req: StructuredRequest<T>): Promise<
     const content: string = choice?.message?.content ?? "";
     const usage = body.usage ?? {};
     console.info(
-      `[ai] ${req.label ?? req.name} ${req.model} ${Date.now() - t0}ms in=${usage.prompt_tokens ?? "?"} out=${usage.completion_tokens ?? "?"} finish=${choice?.finish_reason}`,
+      `[ai] ${req.label ?? req.name} ${req.model} via ${body.provider ?? "?"} ${Date.now() - t0}ms in=${usage.prompt_tokens ?? "?"} out=${usage.completion_tokens ?? "?"} finish=${choice?.finish_reason}`,
     );
     if (!content) {
       lastError = choice?.finish_reason === "content_filter" ? "The topic was blocked by the model's safety filter." : "The model returned an empty response.";
@@ -155,7 +161,7 @@ export async function streamStructured(req: Omit<StructuredRequest<unknown>, "sc
         max_tokens: req.maxTokens ?? 8000,
         reasoning: { effort: req.reasoning ?? "low", exclude: true },
         response_format: { type: "json_schema", json_schema: { name: req.name, strict: true, schema: jsonSchemaFor(req.schema) } },
-        provider: { require_parameters: true },
+        provider: routing(req.model),
       }),
     });
   } catch (e) {
@@ -173,6 +179,7 @@ export async function streamStructured(req: Omit<StructuredRequest<unknown>, "sc
   let text = "";
   let first = 0;
   let finish = "";
+  let provider = "?";
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -191,6 +198,7 @@ export async function streamStructured(req: Omit<StructuredRequest<unknown>, "sc
         continue;
       }
       if (json.error) throw new AIError(`The AI provider failed mid-answer: ${json.error.message ?? "unknown error"}`);
+      if (json.provider) provider = json.provider;
       const choice = json.choices?.[0];
       const piece: string | undefined = choice?.delta?.content;
       if (piece) {
@@ -201,7 +209,7 @@ export async function streamStructured(req: Omit<StructuredRequest<unknown>, "sc
       if (choice?.finish_reason) finish = choice.finish_reason;
     }
   }
-  console.info(`[ai] ${req.label ?? req.name} ${req.model} streamed ${Date.now() - t0}ms (first token ${first}ms) chars=${text.length} finish=${finish}`);
+  console.info(`[ai] ${req.label ?? req.name} ${req.model} via ${provider} streamed ${Date.now() - t0}ms (first token ${first}ms) chars=${text.length} finish=${finish}`);
   if (finish === "content_filter") throw new AIError("The topic was blocked by the model's safety filter.", 422, false);
   return text;
 }

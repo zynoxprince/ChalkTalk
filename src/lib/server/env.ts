@@ -24,6 +24,22 @@ export const config = {
   tutorReasoning: (process.env.TUTOR_REASONING || "minimal") as "minimal" | "low" | "medium" | "high",
 
   /**
+   * Which OpenRouter endpoints serve the lesson and tutor models, in order of
+   * preference (comma-separated provider slugs such as "google-ai-studio";
+   * "auto" leaves the choice to OpenRouter). Other endpoints stay available as
+   * fallbacks if the preferred ones fail. For Google models the default is
+   * Google AI Studio's standard tier: Hydrogen's first word arrived there in
+   * 3–4 s, against 5–70 s on the Vertex endpoints, and OpenRouter's own pick
+   * could try Vertex first and wait ~10 s for a timeout before falling back.
+   */
+  modelProviders(model: string): string[] | null {
+    const raw = (process.env.MODEL_PROVIDERS ?? "").trim();
+    if (raw === "auto") return null;
+    if (raw) return raw.split(",").map((s) => s.trim()).filter(Boolean);
+    return model.startsWith("google/") ? ["google-ai-studio"] : null;
+  },
+
+  /**
    * Narrator, called through OpenRouter: a text-to-speech model (Gemini TTS by
    * default) or an audio-output chat model such as `openai/gpt-audio-mini`.
    */

@@ -166,6 +166,7 @@ Visit **`/playground`** to see the whiteboard engine play a hand-written lesson 
 | `LESSON_MODEL` | no | `google/gemini-4-hydrogen` | Writes plans, chapters, recaps and quizzes |
 | `TUTOR_MODEL` | no | `LESSON_MODEL` | Answers questions |
 | `LESSON_REASONING` / `TUTOR_REASONING` | no | `minimal` | Reasoning effort; lower is faster |
+| `MODEL_PROVIDERS` | no | `google-ai-studio` for Google models | Preferred OpenRouter endpoints for the lesson and tutor models, in order (others remain as fallbacks); `auto` lets OpenRouter choose |
 | `TTS_MODEL` | no | `google/gemini-3.8-flash-tts` | Narrator: any OpenRouter text-to-speech model (`google/gemini-3.8-flash-lite-tts` is faster), or an audio chat model such as `openai/gpt-audio-mini` |
 | `TTS_VOICE` | no | `Sulafat` | Narrator voice (for Gemini: `Achird`, `Kore`, `Charon`, …) |
 | `TTS_STYLE` | no | a warm, upbeat teacher | Delivery direction for models that take one |

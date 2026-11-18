@@ -8,7 +8,9 @@ import { toPcm } from "@/lib/server/speech";
 import { isChatAudioModel } from "@/lib/server/tts";
 import { compileTimeline, type AudioInfo } from "@/lib/board/timeline";
 import { FIXTURE_SCENES } from "@/lib/lesson/fixture";
-import type { Action } from "@/lib/lesson/schema";
+import type { Action, Segment } from "@/lib/lesson/schema";
+import { isNetworkError, mergeIntro } from "@/lib/client/resilience";
+import { routing } from "@/lib/server/openrouter";
 
 describe("ArrayItemExtractor", () => {
   it("emits each array item as soon as it closes, across arbitrary chunk boundaries", () => {
@@ -217,5 +219,50 @@ describe("opening line", () => {
     expect(openerLine("photosynthesis")).toMatch(/^Photosynthesis/);
     expect(openerLine("E=mc^2 derivation")).not.toMatch(/mc/);
     expect(openerLine("how do airplanes fly")).toBe(openerLine("how do airplanes fly"));
+  });
+});
+
+describe("resilience", () => {
+  const line = (id: string, narration: string, kinds: string[] = []): Segment => ({
+    id,
+    narration,
+    sig: "",
+    actions: kinds.map((kind, i) => ({ id: `${kind}${i}`, kind, cue: "x", text: "x", items: kind === "timeline" ? ["1: a", "2: b"] : null, icon: kind === "icon" ? "sun" : null, at: null, from: null, to: null, target: null, color: null, expr: null }) as Action),
+  });
+
+  it("merges intro lines from a retried plan stream without repeats", () => {
+    const opener = line("intro-0", "Good question. Why is the sky blue?");
+    const hook = line("intro-1", "Look up on a clear day.", ["icon"]);
+    const have = [opener, hook];
+    // The same opener again, and a second opening question from the retry, are skipped.
+    expect(mergeIntro(have, opener)).toBeNull();
+    expect(mergeIntro(have, line("intro-1", "Ever wondered about the sky?", ["icon"]))).toBeNull();
+    // The agenda of the retry is kept; its id moves on if the old one is taken.
+    expect(mergeIntro(have, line("intro-2", "Here's our plan.", ["timeline"]))?.id).toBe("intro-2");
+    expect(mergeIntro([opener], line("intro-0", "Here's our plan.", ["timeline"]))?.id).toBe("intro-1");
+    expect(mergeIntro([], opener)).toBe(opener);
+  });
+
+  it("tells dropped connections from answers of the server", () => {
+    expect(isNetworkError(new TypeError("Load failed"))).toBe(true);
+    expect(isNetworkError({ status: 0 })).toBe(true);
+    expect(isNetworkError(Object.assign(new Error("Too many requests"), { status: 429 }))).toBe(false);
+    expect(isNetworkError(new SyntaxError("bad json"))).toBe(false);
+  });
+
+  it("sends Google models to AI Studio first, keeping fallbacks", () => {
+    const saved = process.env.MODEL_PROVIDERS;
+    try {
+      delete process.env.MODEL_PROVIDERS;
+      expect(routing("google/gemini-4-hydrogen")).toEqual({ order: ["google-ai-studio"], allow_fallbacks: true, require_parameters: true });
+      expect(routing("openai/gpt-5")).toEqual({ require_parameters: true });
+      process.env.MODEL_PROVIDERS = "google-vertex, google-ai-studio";
+      expect(routing("google/gemini-4-hydrogen").order).toEqual(["google-vertex", "google-ai-studio"]);
+      process.env.MODEL_PROVIDERS = "auto";
+      expect(routing("google/gemini-4-hydrogen")).toEqual({ require_parameters: true });
+    } finally {
+      if (saved === undefined) delete process.env.MODEL_PROVIDERS;
+      else process.env.MODEL_PROVIDERS = saved;
+    }
   });
 });

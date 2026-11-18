@@ -7,6 +7,7 @@ import type { SavedLesson } from "@/lib/lesson/saved";
 import { pcm16ToBuffer, unlockAudio } from "@/lib/player/audio";
 import { LessonPlayer } from "@/lib/player/player";
 import { BrowserNarrator } from "@/lib/player/narrator";
+import { isNetworkError, mergeIntro, wait, whenVisible } from "./resilience";
 
 /**
  * Orchestrates one lesson in the browser:
@@ -16,6 +17,8 @@ import { BrowserNarrator } from "@/lib/player/narrator";
  *   every segment voiced through a small priority queue
  * The timeline is recompiled whenever content or audio arrives; the player
  * keeps playing up to the "ready" edge and waits there if it catches up.
+ * A dropped connection never ends the lesson: requests are retried once the
+ * page is visible again, and a plan that has arrived is never thrown away.
  */
 
 export type SceneStatus = "pending" | "streaming" | "ready" | "failed";
@@ -129,8 +132,23 @@ async function* readNdjson<T>(res: Response): AsyncGenerator<T> {
       if (line) yield JSON.parse(line) as T;
     }
   }
-  if (buf.trim()) yield JSON.parse(buf) as T;
+  const last = buf.trim();
+  if (last) {
+    let item: T | undefined;
+    try {
+      item = JSON.parse(last) as T;
+    } catch {
+      // A last line cut off by a dropped connection.
+    }
+    if (item !== undefined) yield item;
+  }
 }
+
+/** Server trouble worth another try (a model that failed or timed out), unlike "too many requests" or a refusal. */
+const retryable = (e: unknown) => isNetworkError(e) || (e instanceof ApiError && (e.status === 500 || e.status === 502 || e.status === 504));
+
+/** Browsers word dropped connections tersely ("Load failed"); say what happened instead. */
+const friendly = (e: unknown) => (isNetworkError(e) ? "The connection dropped while your lesson was being written. Please try again." : (e as Error).message);
 
 const SCENE_ESTIMATE = { intro: 12, chapter: 32, recap: 14 };
 
@@ -223,78 +241,94 @@ export class LessonSession {
 
     // Chapter 1 is written by the same call as the plan and streams in on this response.
     let chapterOne = 0;
-    try {
-      const res = await openStream("/api/lesson/outline", { topic, level }, this.aborter.signal);
-      for await (const msg of readNdjson<{
-        intro?: Segment;
-        outline?: Outline;
-        voice?: { id: string; narration: string; sig: string };
-        segment?: Segment;
-        introDone?: boolean;
-        done?: boolean;
-        refusal?: string;
-        error?: string;
-      }>(res)) {
-        if (msg.refusal) {
-          this.set({ phase: "error", refusal: msg.refusal, error: msg.refusal });
-          return;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const res = await openStream("/api/lesson/outline", { topic, level }, this.aborter.signal);
+        for await (const msg of readNdjson<{
+          intro?: Segment;
+          outline?: Outline;
+          voice?: { id: string; narration: string; sig: string };
+          segment?: Segment;
+          introDone?: boolean;
+          done?: boolean;
+          refusal?: string;
+          error?: string;
+        }>(res)) {
+          if (msg.refusal) {
+            this.set({ phase: "error", refusal: msg.refusal, error: msg.refusal });
+            return;
+          }
+          if (msg.error) {
+            // A failure after the plan only costs chapter 1, which can be asked for separately.
+            if (outline) break;
+            throw new ApiError(msg.error, 502);
+          }
+          if (msg.outline && !outline) {
+            // The plan: lay out the chapter list and start writing chapters 2 and 3 now.
+            outline = msg.outline;
+            this.outline = outline;
+            this.set({
+              title: outline.title,
+              summary: outline.summary,
+              scopeNote: outline.scope_note,
+              clarify: outline.clarify,
+              chapters: outline.chapters.map((c) => ({ title: c.title, goal: c.goal })),
+              scenes: [
+                introScene(),
+                ...outline.chapters.map((c, i): SessionScene => ({ scene: { id: `c${i + 1}`, kind: "chapter", title: c.title, segments: [] }, status: "pending" })),
+                { scene: { id: "recap", kind: "recap", title: "Recap", segments: [] }, status: "pending" },
+              ],
+            });
+            const plan = outline;
+            chapters = Promise.all(plan.chapters.map((_, i) => (i === 0 ? Promise.resolve() : this.loadChapter(i)))).then(() => undefined);
+            this.recompile();
+          }
+          if (msg.intro && !introDone) {
+            // Intro lines, in order: voiced as soon as they arrive (a retried stream repeats some).
+            const line = mergeIntro(introSegments, msg.intro);
+            if (line) {
+              introSegments = [...introSegments, line];
+              this.enqueue([line]);
+              publish();
+            }
+          }
+          if (msg.introDone && !introDone) {
+            introDone = true;
+            publish();
+          }
+          if (msg.voice) this.prefetch(msg.voice);
+          if (msg.segment && outline) {
+            chapterOne++;
+            const cur = this.state.scenes[1].scene;
+            this.replaceScene(1, { scene: { ...cur, segments: [...cur.segments, msg.segment] }, status: "streaming" });
+            this.enqueue([msg.segment]);
+            this.recompile();
+          }
+          if (msg.done) {
+            introDone = true;
+            publish();
+          }
         }
-        if (msg.error) {
-          // A failure after the plan only costs chapter 1, which can be asked for separately.
-          if (outline) break;
-          throw new ApiError(msg.error, 502);
+        if (!outline) throw new ApiError("The lesson plan could not be written. Please try again.", 502);
+        break;
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+        // Once the plan is here, a dropped connection costs at most the rest of chapter 1.
+        if (outline) break;
+        if (attempt < 3 && retryable(e)) {
+          await whenVisible();
+          await wait(700 * attempt);
+          if (this.disposed) return;
+          continue;
         }
-        if (msg.outline) {
-          // The plan: lay out the chapter list and start writing chapters 2 and 3 now.
-          outline = msg.outline;
-          this.outline = outline;
-          this.set({
-            title: outline.title,
-            summary: outline.summary,
-            scopeNote: outline.scope_note,
-            clarify: outline.clarify,
-            chapters: outline.chapters.map((c) => ({ title: c.title, goal: c.goal })),
-            scenes: [
-              introScene(),
-              ...outline.chapters.map((c, i): SessionScene => ({ scene: { id: `c${i + 1}`, kind: "chapter", title: c.title, segments: [] }, status: "pending" })),
-              { scene: { id: "recap", kind: "recap", title: "Recap", segments: [] }, status: "pending" },
-            ],
-          });
-          const plan = outline;
-          chapters = Promise.all(plan.chapters.map((_, i) => (i === 0 ? Promise.resolve() : this.loadChapter(i)))).then(() => undefined);
-          this.recompile();
-        }
-        if (msg.intro) {
-          // Intro lines, in order: voiced as soon as they arrive.
-          introSegments = [...introSegments, msg.intro];
-          this.enqueue([msg.intro]);
-          publish();
-        }
-        if (msg.introDone && !introDone) {
-          introDone = true;
-          publish();
-        }
-        if (msg.voice) this.prefetch(msg.voice);
-        if (msg.segment && outline) {
-          chapterOne++;
-          const cur = this.state.scenes[1].scene;
-          this.replaceScene(1, { scene: { ...cur, segments: [...cur.segments, msg.segment] }, status: "streaming" });
-          this.enqueue([msg.segment]);
-          this.recompile();
-        }
-        if (msg.done) {
-          introDone = true;
-          publish();
-        }
+        this.set({ phase: "error", error: friendly(e) });
+        return;
       }
-      if (!outline || !chapters) throw new ApiError("The lesson plan could not be written. Please try again.", 502);
-      if (!introDone) {
-        introDone = true;
-        publish();
-      }
-    } catch (e) {
-      if ((e as Error).name !== "AbortError") this.set({ phase: "error", error: (e as Error).message });
-      return;
+    }
+    if (!chapters) return;
+    if (!introDone) {
+      introDone = true;
+      publish();
     }
     if (chapterOne > 0) {
       this.replaceScene(1, { scene: this.state.scenes[1].scene, status: "ready" });
@@ -340,19 +374,28 @@ export class LessonSession {
         return;
       }
       this.replaceScene(slot, { scene: base, status: "pending" });
-      if (attempt < 2 && !(e instanceof ApiError && e.status === 429)) return this.loadChapter(index, attempt + 1);
+      // A dropped connection (often a tab in the background) gets more tries, once the page is visible again.
+      const network = isNetworkError(e);
+      if (attempt < (network ? 4 : 2) && !(e instanceof ApiError && e.status === 429)) {
+        if (network) {
+          await whenVisible();
+          await wait(600 * attempt);
+        }
+        if (this.disposed) return;
+        return this.loadChapter(index, attempt + 1);
+      }
       const title = this.outline?.chapters[index]?.title ?? `Chapter ${index + 1}`;
       // Skip this chapter so the lesson keeps going; the panel offers a retry.
       this.replaceScene(index + 1, {
         scene: { id: `c${index + 1}`, kind: "chapter", title, segments: [] },
         status: "failed",
-        error: (e as Error).message,
+        error: friendly(e),
       });
     }
     this.recompile();
   }
 
-  private async loadRecap(): Promise<void> {
+  private async loadRecap(attempt = 1): Promise<void> {
     const { topic, level } = this.state;
     const taught = this.state.scenes.filter((s) => s.scene.kind === "chapter").map((s) => s.scene.segments.map((g) => g.narration).join(" "));
     try {
@@ -367,8 +410,14 @@ export class LessonSession {
       this.enqueue(recap.scene.segments);
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
+      if (attempt < 3 && retryable(e)) {
+        await whenVisible();
+        await wait(800 * attempt);
+        if (!this.disposed) return this.loadRecap(attempt + 1);
+        return;
+      }
       const idx = this.state.scenes.findIndex((s) => s.scene.kind === "recap");
-      this.replaceScene(idx, { ...this.state.scenes[idx], status: "failed", error: (e as Error).message });
+      this.replaceScene(idx, { ...this.state.scenes[idx], status: "failed", error: friendly(e) });
     }
     this.recompile();
   }
@@ -485,7 +534,10 @@ export class LessonSession {
     this.active++;
     let buffer: AudioBuffer | null = null;
     if (this.ctx && !this.ttsDown) {
-      for (let attempt = 1; attempt <= 2 && !buffer && !this.disposed; attempt++) {
+      // Two real attempts. A dropped connection (a tab in the background, a network blip) isn't
+      // counted: it's retried once the page is visible, so the line isn't left to the browser voice.
+      let failures = 0;
+      for (let tries = 0; failures < 2 && tries < 6 && !buffer && !this.disposed; tries++) {
         try {
           buffer = await this.fetchAudio(job.url);
         } catch (e) {
@@ -493,6 +545,12 @@ export class LessonSession {
             this.active--;
             return;
           }
+          if (isNetworkError(e)) {
+            await whenVisible();
+            await wait(400 * (tries + 1));
+            continue;
+          }
+          failures++;
           if (e instanceof ApiError && e.status === 503) this.ttsDown = true;
           if (e instanceof ApiError && (e.status === 403 || e.status === 400 || e.status === 503)) break;
         }
